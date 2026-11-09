@@ -24,6 +24,7 @@ use ArtisanPackUI\EcommercePayPal\Api\PayPalClient;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalCredentials;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalTokenProvider;
 use ArtisanPackUI\EcommercePayPal\Console\Commands\InstallCommand;
+use ArtisanPackUI\EcommercePayPal\Console\Commands\ReauthorizeAuthorizationsCommand;
 use ArtisanPackUI\EcommercePayPal\Console\Commands\RegisterWebhookCommand;
 use ArtisanPackUI\EcommercePayPal\Console\Commands\VerifyCredentialsCommand;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalApplePayGateway;
@@ -34,6 +35,7 @@ use ArtisanPackUI\EcommercePayPal\Gateways\PayPalWalletGateway;
 use ArtisanPackUI\EcommercePayPal\Payloads\OrderPayloadBuilder;
 use ArtisanPackUI\EcommercePayPal\Satellite\PayPalUninstaller;
 use ArtisanPackUI\EcommercePayPal\Settings\PayPalSettings;
+use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\ServiceProvider;
@@ -316,7 +318,8 @@ class EcommercePayPalServiceProvider extends ServiceProvider
     }
 
     /**
-     * Registers the setup commands.
+     * Registers the setup commands and schedules the daily
+     * reauthorization run.
      *
      * @since 1.0.0
      *
@@ -332,7 +335,17 @@ class EcommercePayPalServiceProvider extends ServiceProvider
             InstallCommand::class,
             VerifyCredentialsCommand::class,
             RegisterWebhookCommand::class,
+            ReauthorizeAuthorizationsCommand::class,
         ] );
+
+        // Spec §7.4: authorizations past their honor period are
+        // reauthorized once a day. The command does nothing while PayPal
+        // is switched off.
+        $this->callAfterResolving( Schedule::class, static function ( Schedule $schedule ): void {
+            $schedule->command( ReauthorizeAuthorizationsCommand::class )
+                ->daily()
+                ->withoutOverlapping();
+        } );
     }
 
     /**

@@ -5,7 +5,6 @@ declare( strict_types=1 );
 use ArtisanPackUI\Ecommerce\Contracts\PaymentGateway;
 use ArtisanPackUI\Ecommerce\Contracts\RendersClientPayment;
 use ArtisanPackUI\Ecommerce\Contracts\SharesWebhookEndpoint;
-use ArtisanPackUI\Ecommerce\Models\Order;
 use ArtisanPackUI\Ecommerce\Registries\PaymentGatewayRegistry;
 use ArtisanPackUI\Ecommerce\Registries\SatelliteRegistry;
 use ArtisanPackUI\Ecommerce\Registries\SettingsRegistry;
@@ -15,7 +14,6 @@ use ArtisanPackUI\EcommercePayPal\Api\Data\PayPalOrder;
 use ArtisanPackUI\EcommercePayPal\EcommercePayPalServiceProvider;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalApplePayGateway;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalCardGateway;
-use ArtisanPackUI\EcommercePayPal\Gateways\PayPalGateway;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalGooglePayGateway;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalWalletGateway;
 use ArtisanPackUI\EcommercePayPal\Testing\PayPalFake;
@@ -238,7 +236,7 @@ describe( 'status mapping', function (): void {
     } );
 } );
 
-describe( 'client config and pending operations', function (): void {
+describe( 'client config', function (): void {
     it( 'describes the browser step', function (): void {
         config( [ 'artisanpack.ecommerce-paypal.client_id' => 'public-client-id', 'artisanpack.ecommerce-paypal.intent' => 'authorize' ] );
 
@@ -254,14 +252,4 @@ describe( 'client config and pending operations', function (): void {
             ->and( $config['options'] )->toBe( [ 'order_id' => 'ORDER-1', 'currency' => 'EUR', 'intent' => 'authorize', 'mode' => 'sandbox' ] )
             ->and( json_encode( $config ) )->not->toContain( 'client-secret' );
     } );
-
-    it( 'refuses payment operations until they are built', function ( Closure $call ): void {
-        $call( app( PayPalWalletGateway::class ) );
-    } )->with( [
-        'create'   => [ fn ( PayPalGateway $gateway ) => $gateway->createPaymentSession( CartBuilder::make( [] ) ) ],
-        'retrieve' => [ fn ( PayPalGateway $gateway ) => $gateway->retrievePaymentSession( 'X' ) ],
-        'capture'  => [ fn ( PayPalGateway $gateway ) => $gateway->capturePayment( new Order(), new PaymentSession( 'paypal', 'X', new Money( 1, new Currency( 'USD' ) ) ) ) ],
-        'void'     => [ fn ( PayPalGateway $gateway ) => $gateway->voidPendingPayment( new Order() ) ],
-        'refund'   => [ fn ( PayPalGateway $gateway ) => $gateway->refund( new Order(), new Money( 1, new Currency( 'USD' ) ) ) ],
-    ] )->throws( LogicException::class );
 } );

@@ -17,6 +17,7 @@ namespace ArtisanPackUI\EcommercePayPal\Gateways;
 
 use ArtisanPackUI\Ecommerce\Contracts\SharesWebhookEndpoint;
 use ArtisanPackUI\Ecommerce\ValueObjects\WebhookResult;
+use ArtisanPackUI\EcommercePayPal\Webhooks\WebhookVerifier;
 use Illuminate\Http\Request;
 
 /**
@@ -148,8 +149,10 @@ class PayPalWalletGateway extends PayPalGateway implements SharesWebhookEndpoint
     /**
      * Handles PayPal's webhooks.
      *
-     * Refused until signature verification and event mapping land (#11,
-     * #12): a webhook is never trusted unverified.
+     * Every delivery is signature-checked by {@see WebhookVerifier} first
+     * (spec §8.1); one that fails is refused with the verifier's code. A
+     * verified delivery is returned with its event type, id, and payload;
+     * the payment outcome each event carries is mapped in #12.
      *
      * @since 1.0.0
      *
@@ -159,9 +162,6 @@ class PayPalWalletGateway extends PayPalGateway implements SharesWebhookEndpoint
      */
     public function handleWebhook( Request $request ): WebhookResult
     {
-        return WebhookResult::unverified(
-            'verification_unavailable',
-            __( 'PayPal webhook verification is not available yet.' ),
-        );
+        return app( WebhookVerifier::class )->verify( $request );
     }
 }
