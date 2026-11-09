@@ -1,0 +1,187 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'release/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    name: Lint
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: '8.4'
+          extensions: dom, curl, libxml, mbstring, zip, pdo, sqlite, pdo_sqlite, intl
+          coverage: none
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-lint-composer-${{ hashFiles('**/composer.json') }}
+          restore-keys: ${{ runner.os }}-lint-composer-
+
+      - name: Install dependencies
+        run: composer update --no-interaction --prefer-dist
+
+      - name: Run composer lint
+        run: composer lint
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    name: Test (PHP ${{ matrix.php }}, Laravel ${{ matrix.laravel }}, ${{ matrix.dependencies }})
+
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.3', '8.4']
+        laravel: ['12', '13']
+        dependencies: ['highest']
+        include:
+          # The lowest versions composer.json allows, so a raised floor is
+          # caught. Listed in full: an added combination gets none of the
+          # entries below.
+          - php: '8.3'
+            laravel: '12'
+            dependencies: 'lowest'
+            testbench: '^10.2'
+          - laravel: '12'
+            testbench: '^10.2'
+          - laravel: '13'
+            testbench: '^11.0'
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: dom, curl, libxml, mbstring, zip, pdo, sqlite, pdo_sqlite, intl
+          coverage: none
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-php${{ matrix.php }}-l${{ matrix.laravel }}-${{ matrix.dependencies }}-composer-${{ hashFiles('**/composer.json') }}
+          restore-keys: ${{ runner.os }}-php${{ matrix.php }}-l${{ matrix.laravel }}-${{ matrix.dependencies }}-composer-
+
+      - name: Install dependencies
+        env:
+          LARAVEL: ${{ matrix.laravel }}
+          TESTBENCH: ${{ matrix.testbench }}
+          DEPENDENCIES: ${{ matrix.dependencies }}
+        run: |
+          composer require "illuminate/support:^${LARAVEL}.0" "illuminate/http:^${LARAVEL}.0" --no-interaction --no-update
+          composer require "orchestra/testbench:${TESTBENCH}" --dev --no-interaction --no-update
+
+          if [ "$DEPENDENCIES" = "lowest" ]; then
+            composer update --no-interaction --prefer-dist --with-all-dependencies --prefer-lowest --prefer-stable
+          else
+            composer update --no-interaction --prefer-dist --with-all-dependencies
+          fi
+
+      - name: Run tests
+        env:
+          XDEBUG_MODE: off
+        run: vendor/bin/pest --testsuite=Unit,Feature --no-coverage
+
+  pci-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    name: PCI Column Lint
+
+    # The vault tables (spec §10.1) must never hold PAN, CVV, or track data.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: '8.4'
+          extensions: dom, curl, libxml, mbstring, zip, pdo, sqlite, pdo_sqlite, intl
+          coverage: none
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-lint-composer-${{ hashFiles('**/composer.json') }}
+          restore-keys: ${{ runner.os }}-lint-composer-
+
+      - name: Install dependencies
+        run: composer update --no-interaction --prefer-dist
+
+      - name: Run PCI column lint
+        run: vendor/bin/testbench ecommerce:lint:pci-columns --path="$GITHUB_WORKSPACE/database/migrations"
+
+  translation-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    name: Translation Lint
+
+    # Fails on a bare user-facing string in src/ or resources/ (Blade
+    # included), or a key missing from any of lang/{en,es,fr,de}.json.
+    # `--no-engine` leaves the engine's own sources out of the run.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: '8.4'
+          extensions: dom, curl, libxml, mbstring, zip, pdo, sqlite, pdo_sqlite, intl
+          coverage: none
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-lint-composer-${{ hashFiles('**/composer.json') }}
+          restore-keys: ${{ runner.os }}-lint-composer-
+
+      - name: Install dependencies
+        run: composer update --no-interaction --prefer-dist
+
+      - name: Run translation lint
+        run: >-
+          vendor/bin/testbench ecommerce:lint:translations --no-engine
+          --path="$GITHUB_WORKSPACE/src"
+          --path="$GITHUB_WORKSPACE/resources"
+          --lang="$GITHUB_WORKSPACE/lang"

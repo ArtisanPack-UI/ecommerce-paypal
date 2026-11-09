@@ -1,0 +1,15 @@
+# Keep development files out of Composer dist archives.
+
+/.github            export-ignore
+/.gitignore         export-ignore
+/.gitattributes     export-ignore
+/.coderabbit.yaml   export-ignore
+/.php-cs-fixer.dist.php export-ignore
+/.idea              export-ignore
+/plans              export-ignore
+/audits             export-ignore
+/tests              export-ignore
+/phpcs.xml          export-ignore
+/phpunit.xml        export-ignore
+/testbench.yaml     export-ignore
+/CONTRIBUTING.md    export-ignore
