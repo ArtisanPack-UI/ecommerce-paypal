@@ -22,6 +22,7 @@ use ArtisanPackUI\Ecommerce\Settings\SettingsRepository;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalCredentials;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalTokenProvider;
 use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalApiException;
+use ArtisanPackUI\EcommercePayPal\Support\ApplePayDomainAssociation;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalEnvironment;
 use Closure;
 use Illuminate\Support\Facades\Cache;
@@ -137,7 +138,7 @@ final class PayPalSettings
             self::define( 'methods.paypal.venmo', 'boolean', __( 'Venmo' ), [ 'boolean' ], __( 'Offer Venmo in the PayPal buttons where the buyer is eligible (US only).' ), 120 ),
             self::define( 'methods.card.enabled', 'boolean', __( 'Credit and debit cards' ), [ 'boolean' ], __( 'Offer card fields hosted by PayPal.' ), 130 ),
             self::define( 'methods.apple_pay.enabled', 'boolean', __( 'Apple Pay' ), [ 'boolean' ], __( 'Offer Apple Pay. Register your domain in the PayPal dashboard first.' ), 140 ),
-            self::define( 'methods.apple_pay.domain_association', 'text', __( 'Apple Pay domain association' ), [ 'nullable', 'string', 'max:65535' ], __( 'The Apple domain association file from the PayPal dashboard: its contents, a path to it, or an HTTPS URL.' ), 150 ),
+            self::define( 'methods.apple_pay.domain_association', 'text', __( 'Apple Pay domain association' ), [ 'nullable', 'string', 'max:65535' ], __( 'The Apple domain association file from the PayPal dashboard: its contents, a path to it, or an HTTPS URL. Leave empty to use the file in storage/app/ecommerce-paypal.' ), 150 ),
             self::define( 'methods.google_pay.enabled', 'boolean', __( 'Google Pay' ), [ 'boolean' ], __( 'Offer Google Pay.' ), 160 ),
             self::define( 'pay_later_messaging.checkout', 'boolean', __( 'Pay Later messages at checkout' ), [ 'boolean' ], null, 200 ),
             self::define( 'pay_later_messaging.cart', 'boolean', __( 'Pay Later messages in the cart' ), [ 'boolean' ], null, 210 ),
@@ -236,7 +237,7 @@ final class PayPalSettings
                 ];
             }
 
-            if ( (bool) $value( 'methods.apple_pay.enabled' ) && '' === trim( (string) $value( 'methods.apple_pay.domain_association' ) ) ) {
+            if ( (bool) $value( 'methods.apple_pay.enabled' ) && '' === trim( (string) $value( 'methods.apple_pay.domain_association' ) ) && ! is_file( ApplePayDomainAssociation::publishedPath() ) ) {
                 $errors[] = [
                     'field'   => self::key( 'methods.apple_pay.enabled' ),
                     'code'    => 'paypal-apple-pay-domain-missing',

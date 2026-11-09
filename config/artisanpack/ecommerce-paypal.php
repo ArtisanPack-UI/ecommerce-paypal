@@ -124,8 +124,13 @@ return [
     |                  result doesn't shift liability is refused.
     | - `apple_pay`  — Needs the domain registered in the PayPal dashboard.
     |                  `domain_association` is Apple's domain association
-    |                  file: its contents, an absolute path to it, or an
-    |                  HTTPS URL it can be fetched from.
+    |                  file: its contents, an absolute path to it (named
+    |                  `apple-developer-merchantid-domain-association`), or
+    |                  an HTTPS URL it can be fetched from. When empty, the
+    |                  file in storage/app/ecommerce-paypal/ is used. The
+    |                  package serves it at /.well-known/…; switch
+    |                  `serve_domain_association` off when the web server
+    |                  serves the file itself.
     | - `google_pay` — Google Pay.
     |
     */
@@ -148,8 +153,9 @@ return [
             'require_liability_shift' => true,
         ],
         'apple_pay' => [
-            'enabled'            => false,
-            'domain_association' => env( 'PAYPAL_APPLE_PAY_DOMAIN_ASSOCIATION' ),
+            'enabled'                  => false,
+            'domain_association'       => env( 'PAYPAL_APPLE_PAY_DOMAIN_ASSOCIATION' ),
+            'serve_domain_association' => (bool) env( 'PAYPAL_APPLE_PAY_SERVE_DOMAIN_ASSOCIATION', true ),
         ],
         'google_pay' => [
             'enabled' => false,

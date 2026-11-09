@@ -144,21 +144,60 @@ async function mountButtons(container, config, callbacks = {}) {
   await buttons.render(container);
   return { eligible: true, close: () => call(buttons.close?.bind(buttons)) };
 }
+function resolveColor(value, element) {
+  if (!value) {
+    return "";
+  }
+  const probe = document.createElement("span");
+  probe.style.color = value;
+  probe.style.display = "none";
+  element.appendChild(probe);
+  const computed = window.getComputedStyle(probe).color || value;
+  probe.remove();
+  const canvas = document.createElement("canvas");
+  let context = null;
+  try {
+    context = canvas.getContext?.("2d", { willReadFrequently: true }) ?? null;
+  } catch {
+    context = null;
+  }
+  if (!context) {
+    return computed;
+  }
+  canvas.width = 1;
+  canvas.height = 1;
+  context.fillStyle = computed;
+  context.fillRect(0, 0, 1, 1);
+  const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data;
+  return 255 === alpha ? `rgb(${red}, ${green}, ${blue})` : `rgba(${red}, ${green}, ${blue}, ${(alpha / 255).toFixed(2)})`;
+}
+function cardFieldStyle(element) {
+  const computed = window.getComputedStyle(element);
+  const token = (name, fallback) => resolveColor(computed.getPropertyValue(name).trim() || fallback, element);
+  const color = token("--color-base-content", computed.color || "#1f2937");
+  const font = computed.fontFamily || "system-ui, sans-serif";
+  return {
+    input: { color, "font-family": font, "font-size": "16px", padding: "0.75rem" },
+    ".invalid": { color: token("--color-error", "#b91c1c") },
+    ":focus": { color }
+  };
+}
 async function mountCardFields(fields, config, callbacks = {}) {
   const paypal = await loadSdk(config, { components: ["card-fields"] });
+  const first = Object.values(fields).find(Boolean);
   const card = paypal.CardFields({
-    style: callbacks.style || {},
+    style: callbacks.style || (first ? cardFieldStyle(first) : {}),
     createOrder: () => orderIdOf(config),
     onApprove: (data) => call(callbacks.onApprove, data),
     onError: (error) => call(callbacks.onError, error),
     inputEvents: {
       onChange: (state) => call(callbacks.onChange, state),
-      onBlur: (state) => call(callbacks.onChange, state)
+      onBlur: (state) => call(callbacks.onBlur || callbacks.onChange, state)
     }
   });
   if (!card.isEligible()) {
     call(callbacks.onIneligible);
-    return { eligible: false, submit: async () => void 0, close: () => {
+    return { eligible: false, submit: async () => void 0, getState: async () => void 0, close: () => {
     } };
   }
   const renderers = { name: "NameField", number: "NumberField", expiry: "ExpiryField", cvv: "CVVField" };
@@ -173,6 +212,7 @@ async function mountCardFields(fields, config, callbacks = {}) {
   return {
     eligible: true,
     submit: (submitOptions) => card.submit(submitOptions),
+    getState: async () => "function" === typeof card.getState ? card.getState() : void 0,
     close: () => rendered.forEach((instance) => call(instance.close?.bind(instance)))
   };
 }
@@ -294,6 +334,7 @@ export {
   APPLE_PAY_SDK_URL,
   GOOGLE_PAY_SDK_URL,
   SDK_URL,
+  cardFieldStyle,
   loadScript,
   loadSdk,
   mountApplePay,

@@ -277,7 +277,10 @@ it( 'shapes the payment source per gateway', function (): void {
     // checkout routes are the defaults.
 
     expect( paypalPayload( $cart, PayPalCardGateway::class, [ 'return_url' => 'https://shop.test/r', 'cancel_url' => 'https://shop.test/c' ] )['payment_source'] )
-        ->toBe( [ 'card' => [ 'experience_context' => [ 'return_url' => 'https://shop.test/r', 'cancel_url' => 'https://shop.test/c' ] ] ] )
+        ->toBe( [ 'card' => [
+            'experience_context' => [ 'return_url' => 'https://shop.test/r', 'cancel_url' => 'https://shop.test/c' ],
+            'attributes'         => [ 'verification' => [ 'method' => 'SCA_WHEN_REQUIRED' ] ],
+        ] ] )
         ->and( paypalPayload( $cart, PayPalCardGateway::class )['payment_source']['card']['experience_context'] )->toBe( [
             'return_url' => route( 'artisanpack.ecommerce.storefront.checkout.return' ),
             'cancel_url' => route( 'artisanpack.ecommerce.storefront.checkout' ),

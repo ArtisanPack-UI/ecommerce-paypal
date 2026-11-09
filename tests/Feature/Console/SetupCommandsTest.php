@@ -225,6 +225,21 @@ describe( 'verify-credentials', function (): void {
             ->assertFailed();
     } );
 
+    it( 'fails the Apple Pay domain check when the store isn\'t served over HTTPS', function (): void {
+        config( [ 'app.url' => 'http://shop.test', 'artisanpack.ecommerce-paypal.methods.apple_pay.enabled' => true ] );
+        url()->forceRootUrl( 'http://shop.test' );
+        url()->forceScheme( 'http' );
+        $this->paypal->respond( 'webhooks.get', matchingWebhook() );
+
+        Http::fake( [ '*' => Http::response( 'association', 200 ) ] );
+
+        $this->artisan( 'ecommerce-paypal:verify-credentials' )
+            ->expectsOutputToContain( 'Apple Pay needs the store served over HTTPS' )
+            ->assertFailed();
+
+        Http::assertNotSent( fn ( $request ): bool => str_contains( $request->url(), '.well-known' ) );
+    } );
+
     it( 'fails when the webhook delivers somewhere else', function (): void {
         $this->paypal->respond( 'webhooks.get', matchingWebhook( [ 'url' => 'https://other-store.test/ecommerce/webhooks/paypal' ] ) );
 

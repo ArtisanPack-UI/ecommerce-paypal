@@ -26,6 +26,10 @@
 
             <p class="text-xs text-base-content/70">{{ __( 'You\'ll finish paying in a PayPal window. This store never sees your PayPal login or card details.' ) }}</p>
         </div>
+
+        @if ( $canSave )
+            @include( 'ecommerce-paypal::livewire.payment.partials.save-method', [ 'label' => __( 'Save PayPal for faster checkout' ), 'hint' => __( 'Next time, PayPal shows your saved account.' ) ] )
+        @endif
     @else
         <x-artisanpack-alert icon="o-exclamation-triangle" class="alert-warning alert-soft text-base-content!" :title="__( 'This payment method isn\'t available.' )" data-payment-unavailable />
     @endif
@@ -53,6 +57,13 @@
         const focusHeading = () => document.getElementById( settings.heading )?.focus();
 
         $wire.on( 'payment-failed', ( event ) => announce( errorBox, event?.message || settings.messages.failed ) );
+
+        // The shopper's "save" choice replaced the Order; the SDK's
+        // createOrder reads the id from the config when PayPal opens.
+        $wire.on( 'paypal-order-changed', ( event ) => {
+            settings.config.client_secret    = event.orderId;
+            settings.config.options.order_id = event.orderId;
+        } );
 
         import( settings.module )
             .then( ( paypal ) => paypal.mountButtons( container, settings.config, {

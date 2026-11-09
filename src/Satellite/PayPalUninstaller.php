@@ -17,6 +17,8 @@ namespace ArtisanPackUI\EcommercePayPal\Satellite;
 
 use ArtisanPackUI\Ecommerce\Contracts\SatelliteUninstaller;
 use ArtisanPackUI\Ecommerce\Satellites\SatelliteDescriptor;
+use ArtisanPackUI\EcommercePayPal\Vault\PayPalVault;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Tears down the PayPal satellite for `ecommerce:satellite:uninstall`.
@@ -24,8 +26,8 @@ use ArtisanPackUI\Ecommerce\Satellites\SatelliteDescriptor;
  * Data is kept by default, so reinstalling picks up the stored PayPal
  * customers and vault tokens. With `--purge` the engine rolls back the
  * package's migrations (dropping both vault tables) after this runs; before
- * that, the vault tokens are deleted at PayPal (spec §10.1). That step
- * arrives with the vault tables and the API client.
+ * that, and after the engine's confirmation prompt, the stored vault tokens
+ * are deleted at PayPal (spec §10.1).
  *
  * @package    ArtisanPack_UI
  * @subpackage EcommercePayPal
@@ -56,7 +58,9 @@ final class PayPalUninstaller implements SatelliteUninstaller
     /**
      * Deletes the stored vault tokens at PayPal before the tables are dropped.
      *
-     * A no-op until the vault tables and API client exist.
+     * Only the current mode's tokens can be deleted with the configured
+     * credentials. A token PayPal refuses to delete is reported and the
+     * uninstall goes on; the counts are logged.
      *
      * @since 1.0.0
      *
@@ -64,5 +68,12 @@ final class PayPalUninstaller implements SatelliteUninstaller
      */
     protected function deleteVaultTokens(): void
     {
+        $result = app( PayPalVault::class )->purge();
+
+        if ( 0 === array_sum( $result ) ) {
+            return;
+        }
+
+        Log::channel( config( 'artisanpack.ecommerce-paypal.logging.channel' ) )->info( 'PayPal vault tokens deleted before the purge.', $result );
     }
 }
