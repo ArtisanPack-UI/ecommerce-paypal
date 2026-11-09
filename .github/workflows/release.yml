@@ -193,8 +193,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update Packagist
-        if: success()
+  # Separate from the release job so a Packagist outage doesn't skip the
+  # docs import; re-run this job alone if it fails.
+  update-packagist:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    name: Update Packagist
+
+    steps:
+      - name: Notify Packagist
         env:
           PACKAGIST_USERNAME: ${{ secrets.PACKAGIST_USERNAME }}
           PACKAGIST_API_TOKEN: ${{ secrets.PACKAGIST_API_TOKEN }}

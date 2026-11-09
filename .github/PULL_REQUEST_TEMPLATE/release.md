@@ -6,8 +6,8 @@
 - **Release Version:** v<!-- X.Y.Z -->
 - **Release Date:** <!-- YYYY-MM-DD -->
 - **Release Type:** <!-- Major / Minor / Patch / Security -->
-- **Release Branch:** `release/<!-- X.Y.x -->`
-- **Target Branch:** `main` or `release/<!-- X.Y.x -->`
+- **Release Branch:** `release/<!-- X.Y -->`
+- **Target Branch:** `main`
 
 ## Release Summary
 
@@ -85,7 +85,7 @@
 
 - [ ] Version number updated in all necessary files
 - [ ] Git tag prepared: `vX.Y.Z`
-- [ ] Release branch created/updated: `release/X.Y.x`
+- [ ] Release branch created/updated: `release/X.Y`
 - [ ] Dependencies updated and tested
 - [ ] Build artifacts generated
 - [ ] Deployment plan reviewed

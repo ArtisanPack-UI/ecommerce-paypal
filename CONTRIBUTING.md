@@ -44,7 +44,7 @@ There are a ton of different ways to contribute to ArtisanPack UI even if you're
 
 Before contributing, make sure you have:
 - Git installed on your machine
-- PHP 8.3 or higher, with the `intl` extension
+- PHP 8.3 or higher, with the `intl` and `openssl` extensions
 - Composer
 - A GitHub account
 
@@ -191,7 +191,7 @@ Use the release branch that matches the issue's milestone. If you're not sure wh
 
 1. **Ensure there isn't an existing pull request** for the same change
 2. **Link an open issue** - This project only accepts pull requests related to open issues
-3. **Run the tests** - `composer test`, and `composer test:browser` for changes to views or front-end behaviour
+3. **Run the tests** - `composer test`
 4. **Run the linters** - `composer lint` and the translation lint above
 5. **Update documentation** in the code (PHPDoc) as needed. Pages under `docs/` are updated in the release pull request.
 

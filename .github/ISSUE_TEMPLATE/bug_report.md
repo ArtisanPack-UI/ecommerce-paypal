@@ -31,6 +31,7 @@ assignees: ''
 - **Operating System:** 
 - **Browser:** 
 - **PHP Version:** 
+- **Laravel Version:** 
 - **Project Version:** 
 
 ## Possible Solution
