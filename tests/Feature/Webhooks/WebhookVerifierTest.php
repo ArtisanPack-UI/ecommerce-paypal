@@ -26,7 +26,12 @@ beforeEach( function (): void {
 
     Sleep::fake();
     Cache::flush();
-    $this->freezeSecond();
+
+    // Certificates take their start time from the real clock when they are
+    // generated (key generation can take over a second on CI), so the test
+    // clock is frozen a minute ahead: every certificate made during the
+    // test is already valid at the frozen time.
+    $this->travelTo( CarbonImmutable::now()->addMinute()->startOfSecond() );
 
     $this->paypal   = PayPalFake::fake();
     $this->identity = paypalSigningIdentity();
