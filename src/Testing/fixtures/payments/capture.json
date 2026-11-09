@@ -1,0 +1,22 @@
+{
+    "id": "3C679366HH908993F",
+    "status": "COMPLETED",
+    "amount": { "currency_code": "USD", "value": "100.00" },
+    "final_capture": true,
+    "invoice_id": "cart-1-1",
+    "custom_id": "1",
+    "seller_protection": { "status": "ELIGIBLE", "dispute_categories": [ "ITEM_NOT_RECEIVED", "UNAUTHORIZED_TRANSACTION" ] },
+    "seller_receivable_breakdown": {
+        "gross_amount": { "currency_code": "USD", "value": "100.00" },
+        "paypal_fee": { "currency_code": "USD", "value": "3.00" },
+        "net_amount": { "currency_code": "USD", "value": "97.00" }
+    },
+    "supplementary_data": { "related_ids": { "order_id": "5O190127TN364715T", "authorization_id": "0VF52814937998046" } },
+    "create_time": "2026-11-09T12:05:00Z",
+    "update_time": "2026-11-09T12:05:00Z",
+    "links": [
+        { "href": "https://api-m.sandbox.paypal.com/v2/payments/captures/3C679366HH908993F", "rel": "self", "method": "GET" },
+        { "href": "https://api-m.sandbox.paypal.com/v2/payments/captures/3C679366HH908993F/refund", "rel": "refund", "method": "POST" },
+        { "href": "https://api-m.sandbox.paypal.com/v2/payments/authorizations/0VF52814937998046", "rel": "up", "method": "GET" }
+    ]
+}

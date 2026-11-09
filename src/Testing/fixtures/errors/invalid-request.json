@@ -1,0 +1,8 @@
+{
+    "name": "INVALID_REQUEST",
+    "details": [
+        { "field": "/purchase_units/@reference_id=='default'/amount/value", "value": "100.001", "location": "body", "issue": "DECIMAL_PRECISION", "description": "If the currency supports decimals, only two decimal place precision is supported." }
+    ],
+    "message": "Request is not well-formed, syntactically incorrect, or violates schema.",
+    "debug_id": "f5f43a5c5d1f6"
+}

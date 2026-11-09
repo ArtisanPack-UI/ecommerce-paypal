@@ -1,0 +1,17 @@
+{
+    "id": "8kk8451t",
+    "customer": { "id": "customer_4029352050" },
+    "payment_source": {
+        "card": {
+            "name": "John Doe",
+            "brand": "VISA",
+            "last_digits": "1111",
+            "expiry": "2030-12",
+            "billing_address": { "country_code": "US" }
+        }
+    },
+    "links": [
+        { "rel": "self", "href": "https://api-m.sandbox.paypal.com/v3/vault/payment-tokens/8kk8451t", "method": "GET" },
+        { "rel": "delete", "href": "https://api-m.sandbox.paypal.com/v3/vault/payment-tokens/8kk8451t", "method": "DELETE" }
+    ]
+}

@@ -1,0 +1,20 @@
+{
+    "id": "1JU08902781691411",
+    "status": "COMPLETED",
+    "amount": { "currency_code": "USD", "value": "10.00" },
+    "invoice_id": "refund-1",
+    "custom_id": "1",
+    "note_to_payer": "Defective product",
+    "seller_payable_breakdown": {
+        "gross_amount": { "currency_code": "USD", "value": "10.00" },
+        "paypal_fee": { "currency_code": "USD", "value": "0.00" },
+        "net_amount": { "currency_code": "USD", "value": "10.00" },
+        "total_refunded_amount": { "currency_code": "USD", "value": "10.00" }
+    },
+    "create_time": "2026-11-10T09:00:00Z",
+    "update_time": "2026-11-10T09:00:00Z",
+    "links": [
+        { "href": "https://api-m.sandbox.paypal.com/v2/payments/refunds/1JU08902781691411", "rel": "self", "method": "GET" },
+        { "href": "https://api-m.sandbox.paypal.com/v2/payments/captures/3C679366HH908993F", "rel": "up", "method": "GET" }
+    ]
+}

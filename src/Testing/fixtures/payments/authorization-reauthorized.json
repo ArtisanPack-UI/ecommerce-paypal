@@ -1,0 +1,14 @@
+{
+    "id": "8AA831015G517922L",
+    "status": "CREATED",
+    "amount": { "currency_code": "USD", "value": "100.00" },
+    "supplementary_data": { "related_ids": { "order_id": "5O190127TN364715T" } },
+    "expiration_time": "2026-12-08T12:05:00Z",
+    "create_time": "2026-11-13T12:05:00Z",
+    "update_time": "2026-11-13T12:05:00Z",
+    "links": [
+        { "href": "https://api-m.sandbox.paypal.com/v2/payments/authorizations/8AA831015G517922L", "rel": "self", "method": "GET" },
+        { "href": "https://api-m.sandbox.paypal.com/v2/payments/authorizations/8AA831015G517922L/capture", "rel": "capture", "method": "POST" },
+        { "href": "https://api-m.sandbox.paypal.com/v2/payments/authorizations/8AA831015G517922L/void", "rel": "void", "method": "POST" }
+    ]
+}

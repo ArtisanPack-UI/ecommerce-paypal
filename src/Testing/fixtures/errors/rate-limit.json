@@ -1,0 +1,5 @@
+{
+    "name": "RATE_LIMIT_REACHED",
+    "message": "Too many requests. Blocked due to rate limiting.",
+    "debug_id": "f5f43a5c5d1f8"
+}
