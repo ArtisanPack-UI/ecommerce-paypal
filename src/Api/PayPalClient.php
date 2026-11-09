@@ -239,6 +239,45 @@ class PayPalClient
     }
 
     /**
+     * Downloads a webhook signing certificate (spec §8.1).
+     *
+     * The caller checks the URL against PayPal's certificate host first.
+     * The download uses the client's timeouts with TLS verification on and
+     * sends no credentials: PayPal serves certificates unauthenticated.
+     *
+     * @since 1.0.0
+     *
+     * @param  string  $url  HTTPS certificate URL from `PAYPAL-CERT-URL`.
+     *
+     * @throws PayPalApiException When it can't be fetched.
+     *
+     * @return string The PEM-encoded certificate (chain).
+     */
+    public function certificate( string $url ): string
+    {
+        try {
+            $response = $this->http
+                ->timeout( max( 1, (int) config( 'artisanpack.ecommerce-paypal.http.timeout', 15 ) ) )
+                ->connectTimeout( max( 1, (int) config( 'artisanpack.ecommerce-paypal.http.connect_timeout', 5 ) ) )
+                ->withOptions( [ 'verify' => true, 'allow_redirects' => false ] )
+                ->get( $url );
+        } catch ( ConnectionException $exception ) {
+            throw PayPalApiException::connectionFailed( $exception );
+        }
+
+        if ( ! $response->successful() || '' === trim( $response->body() ) ) {
+            throw new PayPalApiException(
+                sprintf( 'PayPal returned HTTP %d for a webhook certificate.', $response->status() ),
+                $response->status(),
+                'CERTIFICATE_UNAVAILABLE',
+                debugId: $response->header( 'PayPal-Debug-Id' ) ?: null,
+            );
+        }
+
+        return $response->body();
+    }
+
+    /**
      * Sends a read-only `GET`.
      *
      * @since 1.0.0

@@ -17,21 +17,32 @@ namespace ArtisanPackUI\EcommercePayPal\Gateways;
 
 use ArtisanPackUI\Ecommerce\Contracts\PaymentGateway;
 use ArtisanPackUI\Ecommerce\Contracts\RendersClientPayment;
+use ArtisanPackUI\Ecommerce\Exceptions\PaymentCurrencyMismatchException;
 use ArtisanPackUI\Ecommerce\Models\Cart;
 use ArtisanPackUI\Ecommerce\Models\Order;
+use ArtisanPackUI\Ecommerce\Models\Refund;
 use ArtisanPackUI\Ecommerce\ValueObjects\PaymentResult;
 use ArtisanPackUI\Ecommerce\ValueObjects\PaymentSession;
 use ArtisanPackUI\Ecommerce\ValueObjects\RefundResult;
 use ArtisanPackUI\Ecommerce\ValueObjects\WebhookResult;
+use ArtisanPackUI\EcommercePayPal\Api\Data\PayPalAuthorization;
+use ArtisanPackUI\EcommercePayPal\Api\Data\PayPalCapture;
 use ArtisanPackUI\EcommercePayPal\Api\Data\PayPalOrder;
+use ArtisanPackUI\EcommercePayPal\Api\Data\PayPalRefund;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalClient;
+use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalApiException;
 use ArtisanPackUI\EcommercePayPal\Payloads\OrderPayloadBuilder;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalCurrencies;
+use ArtisanPackUI\EcommercePayPal\Support\PayPalDeclines;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalMoney;
+use ArtisanPackUI\EcommercePayPal\Support\PayPalOrderMeta;
 use Illuminate\Http\Request;
-use LogicException;
+use Illuminate\Support\Str;
+use InvalidArgumentException;
 use Money\Currency;
 use Money\Money;
+use RuntimeException;
+use UnexpectedValueException;
 
 /**
  * What the four PayPal gateways share (spec §6.1, D3): the API client, the
@@ -50,6 +61,26 @@ use Money\Money;
  */
 abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
 {
+    /**
+     * Payment sources whose 3-D Secure result the liability-shift policy
+     * checks (spec §9.4).
+     *
+     * @since 1.0.0
+     *
+     * @var array<int, string>
+     */
+    public const CARD_SOURCES = [ 'card', 'apple_pay', 'google_pay' ];
+
+    /**
+     * Days a PayPal authorization stays valid, counted from the first
+     * authorization (spec §7.4).
+     *
+     * @since 1.0.0
+     *
+     * @var int
+     */
+    public const AUTHORIZATION_VALIDITY_DAYS = 29;
+
     /**
      * Creates the gateway.
      *
@@ -213,88 +244,274 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
     }
 
     /**
-     * Creates the PayPal Order for `$cart`.
+     * Creates the PayPal Order for `$cart` (spec §7.1).
+     *
+     * The body comes from {@see OrderPayloadBuilder} (and the
+     * `ap.ecommerce.paypal.orderPayload` filter). It is sent with
+     * `PayPal-Request-Id` set to `$context['idempotency_key']`, or, without
+     * one, a UUID kept on `cart.meta.paypal.request_id` for as long as the
+     * cart's total, currency, and gateway stay the same: reloading the
+     * payment step returns the same Order instead of creating another.
      *
      * @since 1.0.0
      *
      * @param  Cart                  $cart     Cart.
-     * @param  array<string, mixed>  $context  Context.
+     * @param  array<string, mixed>  $context  `idempotency_key`, plus the payload builder's context.
      *
-     * @throws LogicException Until payment sessions land (#7).
+     * @throws PayPalApiException       When PayPal refuses or can't be reached.
+     * @throws UnexpectedValueException When PayPal's answer has no id or amount.
      *
      * @return PaymentSession
      */
     public function createPaymentSession( Cart $cart, array $context = [] ): PaymentSession
     {
-        throw $this->pending( 'createPaymentSession', 7 );
+        $payload   = $this->payloads->build( $cart, $this, $context );
+        $keyed     = isset( $context['idempotency_key'] ) && '' !== trim( (string) $context['idempotency_key'] );
+        $requestId = $keyed ? (string) $context['idempotency_key'] : $this->cartRequestId( $cart );
+
+        $order = $this->client->orders()->create( $payload, $requestId );
+
+        if ( '' === $order->id() ) {
+            throw new UnexpectedValueException( 'PayPal created an order without an id.' );
+        }
+
+        if ( ! $keyed ) {
+            $meta                       = (array) ( $cart->getAttribute( 'meta' ) ?? [] );
+            $paypal                     = is_array( $meta['paypal'] ?? null ) ? $meta['paypal'] : [];
+            $paypal['request_order_id'] = $order->id();
+
+            $this->saveCartMeta( $cart, $paypal );
+        }
+
+        return $this->sessionFromOrder( $order, $this->cartTotal( $cart ) );
     }
 
     /**
-     * Loads a PayPal Order as a session.
+     * Loads a PayPal Order as a session (spec §7.2), with a `GET` only.
+     *
+     * The session carries the Order's amount, its normalized status, the
+     * `payer-action` link, and, in `metadata`, the PayPal status, intent,
+     * payment source, 3-D Secure `liability_shift`, and the capture
+     * (`charge`) or authorization id when there is one.
      *
      * @since 1.0.0
      *
      * @param  string  $reference  PayPal Order id.
      *
-     * @throws LogicException Until payment sessions land (#7).
+     * @throws PayPalApiException       When PayPal has no such Order (`404`) or can't be reached (retryable).
+     * @throws UnexpectedValueException When the Order has no amount.
      *
      * @return PaymentSession
      */
     public function retrievePaymentSession( string $reference ): PaymentSession
     {
-        throw $this->pending( 'retrievePaymentSession', 7 );
+        return $this->sessionFromOrder( $this->client->orders()->get( $reference ) );
     }
 
     /**
-     * Captures the payment.
+     * Captures the payment for `$session` (spec §7.3).
+     *
+     * - Intent `CAPTURE`: captures the Order (`capture-{order id}`).
+     * - Intent `AUTHORIZE`: authorizes the Order (`authorize-{order id}`),
+     *   records the authorization, then captures it with `final_capture`.
+     *
+     * An Order that is already captured returns its existing capture, so a
+     * second call never moves money twice. Card and wallet payments whose
+     * 3-D Secure result doesn't shift liability are refused when
+     * `methods.card.require_liability_shift` is on. Declines return a
+     * failed result ({@see PayPalDeclines::payment()}); a `PENDING` capture
+     * succeeds and is settled by webhook. The capture id, authorization,
+     * and payer details go to `orders.meta.paypal`.
      *
      * @since 1.0.0
      *
      * @param  Order           $order    Order.
      * @param  PaymentSession  $session  Session.
      *
-     * @throws LogicException Until captures land (#8).
+     * @throws PaymentCurrencyMismatchException When the session isn't in the order's currency.
      *
      * @return PaymentResult
      */
     public function capturePayment( Order $order, PaymentSession $session ): PaymentResult
     {
-        throw $this->pending( 'capturePayment', 8 );
+        $this->assertCurrency( $order, $session->amount );
+
+        try {
+            $paypalOrder = $this->client->orders()->get( $session->reference );
+        } catch ( PayPalApiException $exception ) {
+            return PayPalDeclines::payment( $exception, $session->amount );
+        }
+
+        if ( null !== $paypalOrder->latestCapture() ) {
+            return $this->resultFromOrder( $order, $paypalOrder, $session );
+        }
+
+        $authorizing = 'AUTHORIZE' === $paypalOrder->intent();
+        $ready       = 'APPROVED' === $paypalOrder->status()
+            || ( $authorizing && 'COMPLETED' === $paypalOrder->status() && null !== $paypalOrder->latestAuthorization() );
+
+        if ( ! $ready ) {
+            return $this->notReady( $paypalOrder, $session );
+        }
+
+        $refusal = $this->liabilityShiftRefusal( $paypalOrder, $session );
+
+        if ( null !== $refusal ) {
+            return $refusal;
+        }
+
+        return $authorizing
+            ? $this->captureAuthorized( $order, $paypalOrder, $session )
+            : $this->captureOrder( $order, $paypalOrder, $session );
     }
 
     /**
-     * Voids a pending authorization.
+     * Voids the order's uncaptured authorization (spec §7.4).
+     *
+     * A no-op when nothing is authorized (intent `CAPTURE`, or an Order that
+     * was never approved), and when the authorization or Order is already
+     * voided, expired, denied, or gone, so a retried void is harmless.
+     * Throws when the authorization was captured (it needs a refund), when
+     * PayPal refuses or can't be reached, and when the result doesn't
+     * confirm `VOIDED` (engine contract).
      *
      * @since 1.0.0
      *
      * @param  Order  $order  Order.
      *
-     * @throws LogicException Until voids land (#9).
+     * @throws PayPalApiException When PayPal refuses the void or can't be reached.
+     * @throws RuntimeException   When the payment was captured, or the void is unconfirmed.
      *
      * @return void
      */
     public function voidPendingPayment( Order $order ): void
     {
-        throw $this->pending( 'voidPendingPayment', 9 );
+        $authorizationId = $this->authorizationIdFor( $order );
+
+        if ( null === $authorizationId ) {
+            return;
+        }
+
+        try {
+            $authorization = $this->client->payments()->getAuthorization( $authorizationId );
+        } catch ( PayPalApiException $exception ) {
+            if ( 404 === $exception->status ) {
+                $this->recordAuthorizationStatus( $order, $authorizationId, 'NOT_FOUND' );
+
+                return;
+            }
+
+            throw $exception;
+        }
+
+        $status = (string) $authorization->status();
+
+        if ( in_array( $status, [ 'VOIDED', 'EXPIRED', 'DENIED' ], true ) ) {
+            $this->recordAuthorization( $order, $authorization );
+
+            return;
+        }
+
+        if ( in_array( $status, [ 'CAPTURED', 'PARTIALLY_CAPTURED' ], true ) ) {
+            throw new RuntimeException( __( 'PayPal authorization :id was already captured; refund it instead of voiding it.', [ 'id' => $authorizationId ] ) );
+        }
+
+        if ( ! in_array( $status, [ 'CREATED', 'PENDING' ], true ) ) {
+            throw new RuntimeException( __( 'PayPal authorization :id is in an unexpected state (:status), so it was not voided.', [ 'id' => $authorizationId, 'status' => '' === $status ? '?' : $status ] ) );
+        }
+
+        try {
+            $voided = $this->client->payments()->voidAuthorization( $authorizationId, 'void-' . $authorizationId )
+                ?? $this->client->payments()->getAuthorization( $authorizationId );
+        } catch ( PayPalApiException $exception ) {
+            $settled = match ( true ) {
+                404 === $exception->status                                                                             => 'NOT_FOUND',
+                $exception->hasIssue( 'AUTHORIZATION_EXPIRED' )                                                        => 'EXPIRED',
+                $exception->hasIssue( 'AUTHORIZATION_VOIDED' ), $exception->hasIssue( 'AUTHORIZATION_ALREADY_VOIDED' ) => 'VOIDED',
+                default                                                                                                => null,
+            };
+
+            if ( null !== $settled ) {
+                $this->recordAuthorizationStatus( $order, $authorizationId, $settled );
+
+                return;
+            }
+
+            if ( $exception->hasIssue( 'AUTHORIZATION_ALREADY_CAPTURED' ) || $exception->hasIssue( 'PREVIOUSLY_CAPTURED' ) ) {
+                throw new RuntimeException( __( 'PayPal authorization :id was already captured; refund it instead of voiding it.', [ 'id' => $authorizationId ] ), 0, $exception );
+            }
+
+            throw $exception;
+        }
+
+        if ( 'VOIDED' !== $voided->status() ) {
+            throw new RuntimeException( __( 'PayPal did not confirm that authorization :id was voided (status: :status).', [ 'id' => $authorizationId, 'status' => (string) ( $voided->status() ?? '?' ) ] ) );
+        }
+
+        $this->recordAuthorization( $order, $voided );
     }
 
     /**
-     * Refunds a capture.
+     * Refunds `$amount` of the order's capture (spec §7.5).
+     *
+     * Sent with `PayPal-Request-Id` set to `$context['idempotency_key']`,
+     * `invoice_id` set to `refund-{refund_id}`, `custom_id` set to the engine
+     * refund id (so webhooks match back), and the reason as `note_to_payer`.
+     * Declines return a failed result with a translated message. A `PENDING`
+     * refund succeeds; `PAYMENT.CAPTURE.REFUNDED` confirms it.
      *
      * @since 1.0.0
      *
      * @param  Order                 $order    Order.
-     * @param  Money                 $amount   Amount.
-     * @param  string|null           $reason   Reason.
-     * @param  array<string, mixed>  $context  Context.
+     * @param  Money                 $amount   Amount, in the order's currency.
+     * @param  string|null           $reason   Reason shown to the payer.
+     * @param  array<string, mixed>  $context  `idempotency_key` and `refund_id`.
      *
-     * @throws LogicException Until refunds land (#10).
+     * @throws PaymentCurrencyMismatchException When `$amount` isn't in the order's currency.
      *
      * @return RefundResult
      */
     public function refund( Order $order, Money $amount, ?string $reason = null, array $context = [] ): RefundResult
     {
-        throw $this->pending( 'refund', 10 );
+        $this->assertCurrency( $order, $amount );
+
+        $captureId = $this->captureIdFor( $order, $amount );
+
+        if ( $captureId instanceof RefundResult ) {
+            return $captureId;
+        }
+
+        $refundId  = isset( $context['refund_id'] ) && '' !== (string) $context['refund_id'] ? (string) $context['refund_id'] : null;
+        $requestId = isset( $context['idempotency_key'] ) && '' !== trim( (string) $context['idempotency_key'] )
+            ? (string) $context['idempotency_key']
+            : sprintf( 'refund-%s-%d-%s', $captureId, Refund::query()->where( 'order_id', $order->getKey() )->count() + 1, $amount->getAmount() );
+        $reason    = null === $reason || '' === trim( $reason ) ? null : trim( $reason );
+
+        try {
+            $refund = $this->client->payments()->refundCapture(
+                $captureId,
+                $requestId,
+                PayPalMoney::toPayPal( $amount ),
+                null === $refundId ? null : 'refund-' . $refundId,
+                $reason,
+                $refundId,
+            );
+        } catch ( PayPalApiException $exception ) {
+            // No answer, or PayPal failed on its side: the refund may still
+            // have gone through. Look for it before reporting a failure, or
+            // a re-issued refund would pay out twice.
+            if ( $exception->isRetryable() && null !== $refundId ) {
+                $found = $this->findRefund( $order, $refundId );
+
+                if ( null !== $found ) {
+                    return $this->refundResult( $found, $amount );
+                }
+            }
+
+            return PayPalDeclines::refund( $exception, $amount );
+        }
+
+        return $this->refundResult( $refund, $amount );
     }
 
     /**
@@ -347,6 +564,78 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
     }
 
     /**
+     * The engine result for a refund PayPal returned.
+     *
+     * `COMPLETED` and `PENDING` succeed with the amount PayPal refunded (so
+     * the engine's amount check sees what actually moved); `FAILED` and
+     * `CANCELLED` fail.
+     *
+     * @since 1.0.0
+     *
+     * @param  PayPalRefund  $refund  Refund.
+     * @param  Money         $amount  Amount requested.
+     *
+     * @return RefundResult
+     */
+    protected function refundResult( PayPalRefund $refund, Money $amount ): RefundResult
+    {
+        $status = (string) $refund->status();
+
+        if ( in_array( $status, [ 'FAILED', 'CANCELLED' ], true ) ) {
+            $code = 'refund_' . strtolower( $status );
+
+            return RefundResult::failure( $amount, $code, PayPalDeclines::refundMessage( $code ) );
+        }
+
+        $refunded = $amount;
+
+        if ( null !== $refund->amount() ) {
+            try {
+                $refunded = PayPalMoney::fromPayPal( $refund->amount() );
+            } catch ( InvalidArgumentException ) {
+                $refunded = $amount;
+            }
+        }
+
+        return RefundResult::success( $refunded, '' !== $refund->id() ? $refund->id() : null );
+    }
+
+    /**
+     * The refund PayPal holds for engine refund `$refundId` (matched on
+     * `custom_id` or `invoice_id`), or null when there is none or PayPal
+     * can't be asked.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order   $order     Engine order.
+     * @param  string  $refundId  Engine refund id.
+     *
+     * @return PayPalRefund|null
+     */
+    protected function findRefund( Order $order, string $refundId ): ?PayPalRefund
+    {
+        $reference = (string) ( $order->getAttribute( 'payment_reference' ) ?? '' );
+
+        if ( '' === $reference ) {
+            return null;
+        }
+
+        $paypalOrder = $this->refetch( $reference );
+
+        foreach ( (array) $paypalOrder?->get( 'purchase_units.0.payments.refunds', [] ) as $refund ) {
+            if ( ! is_array( $refund ) ) {
+                continue;
+            }
+
+            if ( $refundId === (string) ( $refund['custom_id'] ?? '' ) || 'refund-' . $refundId === (string) ( $refund['invoice_id'] ?? '' ) ) {
+                return PayPalRefund::fromArray( $refund );
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * The status of a `COMPLETED` Order, from its latest capture or
      * authorization.
      *
@@ -384,17 +673,647 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
     }
 
     /**
-     * The exception for a payment operation that isn't built yet.
+     * A PayPal Order as an engine session.
      *
      * @since 1.0.0
      *
-     * @param  string  $operation  Method name.
-     * @param  int     $issue      Issue that adds it.
+     * @param  PayPalOrder  $order     PayPal Order.
+     * @param  Money|null   $fallback  Amount to use when PayPal's answer has none.
      *
-     * @return LogicException
+     * @throws UnexpectedValueException When the Order has no amount and there is no fallback.
+     *
+     * @return PaymentSession
      */
-    protected function pending( string $operation, int $issue ): LogicException
+    protected function sessionFromOrder( PayPalOrder $order, ?Money $fallback = null ): PaymentSession
     {
-        return new LogicException( sprintf( 'PayPal %s() is not available yet (ArtisanPack-UI/ecommerce-paypal#%d).', $operation, $issue ) );
+        $amount = null !== $order->amount() ? PayPalMoney::fromPayPal( $order->amount() ) : $fallback;
+
+        if ( null === $amount ) {
+            throw new UnexpectedValueException( sprintf( 'PayPal order %s has no amount.', $order->id() ) );
+        }
+
+        $metadata = array_filter( [
+            'paypal_status'   => $order->status(),
+            'intent'          => null === $order->intent() ? null : strtolower( $order->intent() ),
+            'payment_source'  => $order->paymentSourceType(),
+            'liability_shift' => $order->liabilityShift(),
+            'charge'          => $order->latestCapture()?->id(),
+            'authorization'   => $order->latestAuthorization()?->id(),
+        ], static fn ( ?string $value ): bool => null !== $value && '' !== $value );
+
+        return new PaymentSession(
+            gatewayKey: $this->key(),
+            reference: $order->id(),
+            amount: $amount,
+            redirectUrl: $order->payerActionUrl(),
+            metadata: $metadata,
+            status: $this->sessionStatus( $order ),
+        );
+    }
+
+    /**
+     * The `PayPal-Request-Id` for creating an Order when the engine passed
+     * no idempotency key: a UUID kept on `cart.meta.paypal`.
+     *
+     * The id is reused while the cart's gateway, currency, and total are
+     * unchanged and the engine hasn't stored the Order it produced (a retry
+     * after a crash). Once that Order is the cart's payment reference, a new
+     * create means the engine judged it unusable, so a new id is minted.
+     *
+     * @since 1.0.0
+     *
+     * @param  Cart  $cart  Cart.
+     *
+     * @return string
+     */
+    protected function cartRequestId( Cart $cart ): string
+    {
+        $meta        = (array) ( $cart->getAttribute( 'meta' ) ?? [] );
+        $paypal      = is_array( $meta['paypal'] ?? null ) ? $meta['paypal'] : [];
+        $fingerprint = hash( 'sha256', implode( '|', [
+            $this->key(),
+            strtoupper( (string) ( $cart->getAttribute( 'currency' ) ?: $cart->getAttribute( 'total_currency' ) ?: '' ) ),
+            (string) ( $cart->getAttribute( 'total_amount' ) ?? '' ),
+        ] ) );
+        $stored      = isset( $paypal['request_id'] ) && is_string( $paypal['request_id'] ) ? $paypal['request_id'] : '';
+        $usedBy      = isset( $paypal['request_order_id'] ) ? (string) $paypal['request_order_id'] : '';
+
+        if ( '' !== $stored && ( $paypal['request_fingerprint'] ?? null ) === $fingerprint && ( '' === $usedBy || $usedBy !== (string) $cart->getAttribute( 'payment_reference' ) ) ) {
+            return $stored;
+        }
+
+        $paypal['request_id']          = (string) Str::uuid();
+        $paypal['request_fingerprint'] = $fingerprint;
+        unset( $paypal['request_order_id'] );
+
+        $this->saveCartMeta( $cart, $paypal );
+
+        return $paypal['request_id'];
+    }
+
+    /**
+     * Writes `cart.meta.paypal`, saving the cart when it is stored.
+     *
+     * @since 1.0.0
+     *
+     * @param  Cart                  $cart    Cart.
+     * @param  array<string, mixed>  $paypal  The PayPal namespace.
+     *
+     * @return void
+     */
+    protected function saveCartMeta( Cart $cart, array $paypal ): void
+    {
+        $meta           = (array) ( $cart->getAttribute( 'meta' ) ?? [] );
+        $meta['paypal'] = $paypal;
+
+        $cart->setAttribute( 'meta', $meta );
+
+        if ( $cart->exists ) {
+            $cart->save();
+        }
+    }
+
+    /**
+     * The cart's total as engine money, or null when it has no currency.
+     *
+     * @since 1.0.0
+     *
+     * @param  Cart  $cart  Cart.
+     *
+     * @return Money|null
+     */
+    protected function cartTotal( Cart $cart ): ?Money
+    {
+        $currency = strtoupper( (string) ( $cart->getAttribute( 'currency' ) ?: $cart->getAttribute( 'total_currency' ) ?: '' ) );
+
+        return '' === $currency ? null : new Money( (int) ( $cart->getAttribute( 'total_amount' ) ?? 0 ), new Currency( $currency ) );
+    }
+
+    /**
+     * The failure for an Order that can't be captured yet.
+     *
+     * @since 1.0.0
+     *
+     * @param  PayPalOrder     $order    PayPal Order.
+     * @param  PaymentSession  $session  Session.
+     *
+     * @return PaymentResult
+     */
+    protected function notReady( PayPalOrder $order, PaymentSession $session ): PaymentResult
+    {
+        $status = (string) $order->status();
+
+        return match ( $status ) {
+            'PAYER_ACTION_REQUIRED' => PaymentResult::retryableFailure( $session->amount, 'requires_action', __( 'PayPal needs you to complete another step before this payment can be taken.' ) ),
+            'VOIDED'                => PaymentResult::terminalFailure( $session->amount, 'paypal_order_voided', __( 'This PayPal payment was cancelled. Start the payment again.' ) ),
+            'CREATED', 'SAVED'      => PaymentResult::terminalFailure( $session->amount, 'payment_not_approved', __( 'The payment has not been approved in PayPal yet.' ) ),
+            default                 => PaymentResult::retryableFailure( $session->amount, 'paypal_order_' . strtolower( '' === $status ? 'unknown' : $status ), __( 'PayPal is still processing this payment. Try again in a moment.' ) ),
+        };
+    }
+
+    /**
+     * The refusal for a card or wallet payment whose 3-D Secure result
+     * doesn't shift liability (`NO`, `UNKNOWN`) while
+     * `methods.card.require_liability_shift` is on, or null to go ahead.
+     *
+     * @since 1.0.0
+     *
+     * @param  PayPalOrder     $order    PayPal Order.
+     * @param  PaymentSession  $session  Session.
+     *
+     * @return PaymentResult|null
+     */
+    protected function liabilityShiftRefusal( PayPalOrder $order, PaymentSession $session ): ?PaymentResult
+    {
+        if ( ! in_array( $order->paymentSourceType(), self::CARD_SOURCES, true ) ) {
+            return null;
+        }
+
+        if ( ! (bool) config( 'artisanpack.ecommerce-paypal.methods.card.require_liability_shift', true ) ) {
+            return null;
+        }
+
+        if ( ! in_array( strtoupper( (string) $order->liabilityShift() ), [ 'NO', 'UNKNOWN' ], true ) ) {
+            return null;
+        }
+
+        return PaymentResult::terminalFailure(
+            $session->amount,
+            'liability_shift_rejected',
+            __( 'Your bank couldn\'t verify this card. Try another card or payment method.' ),
+        );
+    }
+
+    /**
+     * Captures an approved `CAPTURE`-intent Order.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order           $order        Engine order.
+     * @param  PayPalOrder     $paypalOrder  Approved PayPal Order.
+     * @param  PaymentSession  $session      Session.
+     *
+     * @return PaymentResult
+     */
+    protected function captureOrder( Order $order, PayPalOrder $paypalOrder, PaymentSession $session ): PaymentResult
+    {
+        try {
+            $captured = $this->client->orders()->capture( $paypalOrder->id(), 'capture-' . $paypalOrder->id() );
+        } catch ( PayPalApiException $exception ) {
+            if ( $exception->hasIssue( 'ORDER_ALREADY_CAPTURED' ) ) {
+                $current = $this->refetch( $paypalOrder->id() );
+
+                if ( null !== $current?->latestCapture() ) {
+                    return $this->resultFromOrder( $order, $current, $session );
+                }
+            }
+
+            return PayPalDeclines::payment( $exception, $session->amount );
+        }
+
+        return $this->resultFromOrder( $order, $captured, $session );
+    }
+
+    /**
+     * Authorizes an approved `AUTHORIZE`-intent Order (unless it already
+     * is), records the authorization, and captures it in full.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order           $order        Engine order.
+     * @param  PayPalOrder     $paypalOrder  Approved or authorized PayPal Order.
+     * @param  PaymentSession  $session      Session.
+     *
+     * @return PaymentResult
+     */
+    protected function captureAuthorized( Order $order, PayPalOrder $paypalOrder, PaymentSession $session ): PaymentResult
+    {
+        if ( null === $paypalOrder->latestAuthorization() ) {
+            try {
+                $paypalOrder = $this->client->orders()->authorize( $paypalOrder->id(), 'authorize-' . $paypalOrder->id() );
+            } catch ( PayPalApiException $exception ) {
+                $current = $exception->hasIssue( 'ORDER_ALREADY_AUTHORIZED' ) ? $this->refetch( $paypalOrder->id() ) : null;
+
+                if ( null === $current?->latestAuthorization() ) {
+                    return PayPalDeclines::payment( $exception, $session->amount );
+                }
+
+                $paypalOrder = $current;
+            }
+        }
+
+        $authorization = $paypalOrder->latestAuthorization();
+
+        if ( null === $authorization || '' === $authorization->id() ) {
+            return PaymentResult::retryableFailure( $session->amount, 'authorization_missing', __( 'PayPal did not return the authorization. Try again in a moment.' ) );
+        }
+
+        $this->recordPayment( $order, $paypalOrder );
+
+        $status = (string) $authorization->status();
+
+        if ( in_array( $status, [ 'CAPTURED', 'PARTIALLY_CAPTURED' ], true ) ) {
+            $current = $this->refetch( $paypalOrder->id() );
+
+            return null === $current
+                ? PaymentResult::retryableFailure( $session->amount, PayPalDeclines::PROVIDER_UNAVAILABLE, __( 'PayPal could not be reached. Try again in a moment.' ) )
+                : $this->resultFromOrder( $order, $current, $session );
+        }
+
+        if ( in_array( $status, [ 'VOIDED', 'EXPIRED', 'DENIED' ], true ) ) {
+            return PaymentResult::terminalFailure( $session->amount, 'authorization_' . strtolower( $status ), __( 'The PayPal authorization is no longer valid. Start the payment again.' ) );
+        }
+
+        if ( 'CREATED' !== $status ) {
+            return PaymentResult::retryableFailure( $session->amount, 'authorization_' . strtolower( '' === $status ? 'unknown' : $status ), __( 'PayPal is still reviewing this payment. Try again later.' ) );
+        }
+
+        try {
+            $capture = $this->client->payments()->captureAuthorization( $authorization->id(), 'capture-' . $authorization->id(), null, true );
+        } catch ( PayPalApiException $exception ) {
+            if ( $exception->hasIssue( 'AUTHORIZATION_ALREADY_CAPTURED' ) ) {
+                $current = $this->refetch( $paypalOrder->id() );
+
+                if ( null !== $current?->latestCapture() ) {
+                    return $this->resultFromOrder( $order, $current, $session );
+                }
+            }
+
+            return PayPalDeclines::payment( $exception, $session->amount );
+        }
+
+        return $this->resultFromCapture( $order, $paypalOrder, $capture, $session );
+    }
+
+    /**
+     * The result for an Order that carries a capture.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order           $order        Engine order.
+     * @param  PayPalOrder     $paypalOrder  PayPal Order.
+     * @param  PaymentSession  $session      Session.
+     *
+     * @return PaymentResult
+     */
+    protected function resultFromOrder( Order $order, PayPalOrder $paypalOrder, PaymentSession $session ): PaymentResult
+    {
+        $capture = $paypalOrder->latestCapture();
+
+        if ( null === $capture || '' === $capture->id() ) {
+            return PaymentResult::retryableFailure( $session->amount, 'capture_missing', __( 'PayPal did not return the capture. Try again in a moment.' ) );
+        }
+
+        return $this->resultFromCapture( $order, $paypalOrder, $capture, $session );
+    }
+
+    /**
+     * The result for a capture: `COMPLETED` (or since refunded) and
+     * `PENDING` succeed, the capture id being the gateway reference;
+     * `DECLINED` and `FAILED` are terminal.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order           $order        Engine order.
+     * @param  PayPalOrder     $paypalOrder  PayPal Order the capture belongs to.
+     * @param  PayPalCapture   $capture      Capture.
+     * @param  PaymentSession  $session      Session.
+     *
+     * @return PaymentResult
+     */
+    protected function resultFromCapture( Order $order, PayPalOrder $paypalOrder, PayPalCapture $capture, PaymentSession $session ): PaymentResult
+    {
+        $this->recordPayment( $order, $paypalOrder, $capture );
+
+        $status = (string) $capture->status();
+
+        if ( in_array( $status, [ 'COMPLETED', 'PARTIALLY_REFUNDED', 'REFUNDED', 'PENDING' ], true ) ) {
+            return PaymentResult::success( $this->capturedAmount( $capture, $session ), $capture->id() );
+        }
+
+        if ( in_array( $status, [ 'DECLINED', 'FAILED' ], true ) ) {
+            return PaymentResult::terminalFailure( $session->amount, 'capture_' . strtolower( $status ), __( 'PayPal declined the payment. Choose another way to pay.' ) );
+        }
+
+        return PaymentResult::retryableFailure( $session->amount, 'capture_' . strtolower( '' === $status ? 'unknown' : $status ), __( 'PayPal is still processing this payment. Try again in a moment.' ) );
+    }
+
+    /**
+     * What a capture took, in engine money (the session amount when PayPal
+     * left it out or sent something unreadable).
+     *
+     * @since 1.0.0
+     *
+     * @param  PayPalCapture   $capture  Capture.
+     * @param  PaymentSession  $session  Session.
+     *
+     * @return Money
+     */
+    protected function capturedAmount( PayPalCapture $capture, PaymentSession $session ): Money
+    {
+        $amount = $capture->amount();
+
+        if ( null === $amount ) {
+            return $session->amount;
+        }
+
+        try {
+            return PayPalMoney::fromPayPal( $amount );
+        } catch ( InvalidArgumentException ) {
+            return $session->amount;
+        }
+    }
+
+    /**
+     * Saves the PayPal Order, payer, funding source, card, authorization,
+     * and capture details to `orders.meta.paypal`.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order               $order        Engine order.
+     * @param  PayPalOrder         $paypalOrder  PayPal Order.
+     * @param  PayPalCapture|null  $capture      Capture, once there is one.
+     *
+     * @return void
+     */
+    protected function recordPayment( Order $order, PayPalOrder $paypalOrder, ?PayPalCapture $capture = null ): void
+    {
+        $source = $paypalOrder->paymentSourceType();
+        $card   = null === $source ? null : ( 'card' === $source ? $paypalOrder->get( 'payment_source.card' ) : $paypalOrder->get( 'payment_source.' . $source . '.card' ) );
+        $card   = is_array( $card ) ? $card : [];
+
+        $values = [
+            'order_id'        => $paypalOrder->id(),
+            'intent'          => null === $paypalOrder->intent() ? null : strtolower( $paypalOrder->intent() ),
+            'mode'            => $this->client->environment()->mode,
+            'funding_source'  => $source,
+            'liability_shift' => $paypalOrder->liabilityShift(),
+            'payer'           => self::filled( [ 'email' => $paypalOrder->payerEmail(), 'id' => $paypalOrder->payerId() ] ),
+            'card'            => self::filled( [
+                'brand'       => isset( $card['brand'] ) ? (string) $card['brand'] : null,
+                'last_digits' => isset( $card['last_digits'] ) ? (string) $card['last_digits'] : null,
+            ] ),
+        ];
+
+        $authorization = $paypalOrder->latestAuthorization();
+
+        if ( null !== $authorization && '' !== $authorization->id() ) {
+            $values['authorization'] = $this->authorizationMeta( $order, $authorization );
+        }
+
+        if ( null !== $capture ) {
+            // Only a capture that took (or is taking) money becomes the
+            // order's capture: refunds go against it, and the lifecycle job
+            // treats the authorization as settled.
+            if ( in_array( $capture->status(), [ 'COMPLETED', 'PENDING', 'PARTIALLY_REFUNDED', 'REFUNDED' ], true ) ) {
+                $values['capture_id'] = $capture->id();
+            }
+
+            $values['capture_status'] = $capture->status();
+            $values['pending_reason'] = 'PENDING' === $capture->status() ? $capture->pendingReason() : null;
+
+            if ( isset( $values['capture_id'] ) && null !== $capture->authorizationId() && $capture->authorizationId() === ( $values['authorization']['id'] ?? null ) ) {
+                $values['authorization']['status'] = 'CAPTURED';
+            }
+        }
+
+        PayPalOrderMeta::merge( $order, self::filled( $values ), $paypalOrder->id() );
+    }
+
+    /**
+     * Saves an authorization's state to `orders.meta.paypal.authorization`.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order                $order          Engine order.
+     * @param  PayPalAuthorization  $authorization  Authorization.
+     *
+     * @return void
+     */
+    protected function recordAuthorization( Order $order, PayPalAuthorization $authorization ): void
+    {
+        if ( '' === $authorization->id() ) {
+            return;
+        }
+
+        PayPalOrderMeta::merge( $order, [ 'authorization' => $this->authorizationMeta( $order, $authorization ) ], $authorization->orderId() );
+    }
+
+    /**
+     * Records that the order's authorization `$authorizationId` ended in
+     * `$status` (when PayPal confirmed it through an error response), so the
+     * lifecycle job stops treating it as held.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order   $order            Engine order.
+     * @param  string  $authorizationId  Authorization id.
+     * @param  string  $status           Final status.
+     *
+     * @return void
+     */
+    protected function recordAuthorizationStatus( Order $order, string $authorizationId, string $status ): void
+    {
+        if ( $authorizationId !== PayPalOrderMeta::get( $order, 'authorization.id' ) ) {
+            return;
+        }
+
+        PayPalOrderMeta::merge( $order, [ 'authorization' => [ 'status' => $status ] ] );
+    }
+
+    /**
+     * The `orders.meta.paypal.authorization` values for `$authorization`.
+     *
+     * `authorized_at` and `expires_at` keep the original authorization's
+     * times: PayPal's 29-day validity runs from the first authorization,
+     * and a reauthorization doesn't extend it.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order                $order          Engine order.
+     * @param  PayPalAuthorization  $authorization  Authorization.
+     *
+     * @return array<string, string>
+     */
+    protected function authorizationMeta( Order $order, PayPalAuthorization $authorization ): array
+    {
+        $existing  = (array) PayPalOrderMeta::get( $order, 'authorization', [] );
+        $existing  = ( $existing['id'] ?? null ) === $authorization->id() ? $existing : [];
+        $createdAt = $authorization->createdAt();
+        $expiresAt = $authorization->expiresAt() ?? $createdAt?->addDays( self::AUTHORIZATION_VALIDITY_DAYS );
+
+        return self::filled( [
+            'id'            => $authorization->id(),
+            'status'        => $authorization->status(),
+            'created_at'    => $createdAt?->toIso8601String(),
+            'authorized_at' => isset( $existing['authorized_at'] ) ? (string) $existing['authorized_at'] : $createdAt?->toIso8601String(),
+            'expires_at'    => isset( $existing['expires_at'] ) ? (string) $existing['expires_at'] : $expiresAt?->toIso8601String(),
+        ] );
+    }
+
+    /**
+     * The id of the order's authorization, or null when nothing was
+     * authorized (or the Order is gone).
+     *
+     * @since 1.0.0
+     *
+     * @param  Order  $order  Engine order.
+     *
+     * @throws PayPalApiException When PayPal can't be reached.
+     * @throws RuntimeException   When the Order was captured without an authorization.
+     *
+     * @return string|null
+     */
+    protected function authorizationIdFor( Order $order ): ?string
+    {
+        $reference = (string) ( $order->getAttribute( 'payment_reference' ) ?? '' );
+        $stored    = PayPalOrderMeta::describes( $order, $reference ) ? PayPalOrderMeta::get( $order, 'authorization.id' ) : null;
+
+        if ( is_string( $stored ) && '' !== $stored ) {
+            return $stored;
+        }
+
+        if ( '' === $reference ) {
+            return null;
+        }
+
+        try {
+            $paypalOrder = $this->client->orders()->get( $reference );
+        } catch ( PayPalApiException $exception ) {
+            if ( 404 === $exception->status ) {
+                return null;
+            }
+
+            throw $exception;
+        }
+
+        $authorization = $paypalOrder->latestAuthorization();
+
+        if ( null !== $authorization && '' !== $authorization->id() ) {
+            return $authorization->id();
+        }
+
+        if ( in_array( $paypalOrder->latestCapture()?->status(), [ 'COMPLETED', 'PENDING', 'PARTIALLY_REFUNDED' ], true ) ) {
+            throw new RuntimeException( __( 'PayPal order :id was already captured; refund it instead of voiding it.', [ 'id' => $reference ] ) );
+        }
+
+        return null;
+    }
+
+    /**
+     * The capture to refund, or the failed result when there is none.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order  $order   Engine order.
+     * @param  Money  $amount  Amount being refunded.
+     *
+     * @return RefundResult|string
+     */
+    protected function captureIdFor( Order $order, Money $amount ): string|RefundResult
+    {
+        $meta      = (array) ( $order->getAttribute( 'meta' ) ?? [] );
+        $reference = (string) ( $order->getAttribute( 'payment_reference' ) ?? '' );
+        $current   = PayPalOrderMeta::describes( $order, $reference );
+        $stored    = ( $current ? PayPalOrderMeta::get( $order, 'capture_id' ) : null ) ?? data_get( $meta, 'payment.capture_reference' );
+
+        if ( is_string( $stored ) && '' !== $stored ) {
+            return $stored;
+        }
+
+        if ( $current && null !== PayPalOrderMeta::get( $order, 'authorization.id' ) ) {
+            return $this->notCaptured( $amount );
+        }
+
+        if ( '' === $reference ) {
+            return RefundResult::failure( $amount, 'missing_payment_reference', __( 'This order has no PayPal payment to refund.' ) );
+        }
+
+        try {
+            $paypalOrder = $this->client->orders()->get( $reference );
+        } catch ( PayPalApiException $exception ) {
+            return PayPalDeclines::refund( $exception, $amount );
+        }
+
+        $capture = $paypalOrder->latestCapture();
+
+        if ( null !== $capture && '' !== $capture->id() ) {
+            return $capture->id();
+        }
+
+        return null !== $paypalOrder->latestAuthorization()
+            ? $this->notCaptured( $amount )
+            : RefundResult::failure( $amount, 'missing_capture', __( 'This order has no PayPal payment to refund.' ) );
+    }
+
+    /**
+     * The refusal for refunding a payment that was only authorized.
+     *
+     * @since 1.0.0
+     *
+     * @param  Money  $amount  Amount being refunded.
+     *
+     * @return RefundResult
+     */
+    protected function notCaptured( Money $amount ): RefundResult
+    {
+        return RefundResult::failure(
+            $amount,
+            'not_captured',
+            __( 'This PayPal payment was only authorized, not captured. Void the authorization instead of refunding it.' ),
+        );
+    }
+
+    /**
+     * Fetches an Order again, or null when that fails.
+     *
+     * @since 1.0.0
+     *
+     * @param  string  $orderId  PayPal Order id.
+     *
+     * @return PayPalOrder|null
+     */
+    protected function refetch( string $orderId ): ?PayPalOrder
+    {
+        try {
+            return $this->client->orders()->get( $orderId );
+        } catch ( PayPalApiException ) {
+            return null;
+        }
+    }
+
+    /**
+     * Throws when `$amount` isn't in the order's currency.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order  $order   Engine order.
+     * @param  Money  $amount  Amount.
+     *
+     * @throws PaymentCurrencyMismatchException On a mismatch.
+     *
+     * @return void
+     */
+    protected function assertCurrency( Order $order, Money $amount ): void
+    {
+        $expected = strtoupper( (string) $order->getAttribute( 'currency' ) );
+
+        if ( $amount->getCurrency()->getCode() !== $expected ) {
+            throw new PaymentCurrencyMismatchException( $expected, $amount->getCurrency()->getCode() );
+        }
+    }
+
+    /**
+     * `$values` without nulls, empty strings, and empty arrays.
+     *
+     * @since 1.0.0
+     *
+     * @param  array<string, mixed>  $values  Values.
+     *
+     * @return array<string, mixed>
+     */
+    protected static function filled( array $values ): array
+    {
+        return array_filter( $values, static fn ( mixed $value ): bool => null !== $value && '' !== $value && [] !== $value );
     }
 }
