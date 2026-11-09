@@ -1,0 +1,237 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    name: Preflight checks
+
+    steps:
+      # This workflow must create the release itself, so the signed
+      # verification report is attached and Packagist is updated. A release
+      # created by hand for the tag skips both. Fail fast with the
+      # reason instead of after the tests.
+      - name: Refuse a tag that already has a release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "::error::A release for $TAG already exists. It was not created by this workflow. Cut a new patch version; do not create releases by hand."
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # composer.json has no version field: Packagist reads the tag. The
+      # provider's VERSION constant (reported to the engine's satellite
+      # registry) and the CHANGELOG must name the same version, or the
+      # release would ship with the wrong one.
+      - name: Check the tag matches VERSION and the CHANGELOG
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG#v}"
+
+          if ! grep -qF "public const VERSION = '${VERSION}';" src/EcommercePayPalServiceProvider.php; then
+            echo "::error::EcommercePayPalServiceProvider::VERSION does not match ${TAG}. Bump it before tagging."
+            exit 1
+          fi
+
+          if ! grep -qF "## [${VERSION}]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no ## [${VERSION}] section."
+            exit 1
+          fi
+
+  test:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    name: Test before release
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: '8.4'
+          extensions: dom, curl, libxml, mbstring, zip, pdo, sqlite, pdo_sqlite, intl
+          coverage: none
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-release-composer-${{ hashFiles('**/composer.json') }}
+          restore-keys: ${{ runner.os }}-release-composer-
+
+      # composer.lock is not committed (this is a library), so resolve the
+      # latest allowed versions, as CI does.
+      - name: Install dependencies
+        run: composer update --no-interaction --prefer-dist
+
+      - name: Run tests
+        env:
+          XDEBUG_MODE: off
+        run: vendor/bin/pest --testsuite=Unit,Feature --no-coverage
+
+  # The engine's satellite contract verification. On a tag it signs the
+  # report on a separate runner when ECOMMERCE_VERIFY_SIGNING_KEY is set;
+  # the release job attaches it. Until the gateway family lands (#5) the
+  # package registers no engine contract implementations: --allow-empty.
+  # Drop the flag in #26.
+  verify:
+    needs: preflight
+    # Pinned to an engine release tag: this job hands the workflow the
+    # signing key, so never point it at a moving branch.
+    uses: ArtisanPack-UI/ecommerce/.github/workflows/verify-satellite.yml@v1.2.0
+    permissions:
+      contents: read
+    with:
+      php-version: '8.4'
+      extra-args: '--allow-empty'
+    secrets:
+      ECOMMERCE_VERIFY_SIGNING_KEY: ${{ secrets.ECOMMERCE_VERIFY_SIGNING_KEY }}
+
+  release:
+    needs: [test, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    name: Create Release
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract release notes from CHANGELOG
+        # Passed through `env:` rather than interpolated into the script: a
+        # workflow expression is substituted before the shell parses anything,
+        # and a git tag may contain `;`, `|`, `$` and backticks.
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          echo "Extracting notes for version $VERSION"
+
+          if [ ! -f "CHANGELOG.md" ]; then
+            echo "Release v$VERSION" > release_notes.txt
+            exit 0
+          fi
+
+          # The section between this version's header and the next one.
+          NOTES=$(awk -v ver="$VERSION" '
+            /^## \[/ {
+              if (found) exit
+              if (index($0, "[" ver "]")) { found=1; next }
+            }
+            found { print }
+          ' CHANGELOG.md)
+
+          # Remove leading and trailing blank lines.
+          NOTES=$(echo "$NOTES" | sed '/./,$!d' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')
+
+          if [ -z "$NOTES" ]; then
+            NOTES="Release v$VERSION — see CHANGELOG.md for details."
+          fi
+
+          echo "$NOTES" > release_notes.txt
+
+      # Releases are immutable once published, so the report and its
+      # signature go in with the release, not after it. A release without
+      # them would stay unverified until the next version: refuse to
+      # publish one.
+      - name: Require a signed verification report
+        if: ${{ needs.verify.outputs.signed != 'true' }}
+        run: |
+          echo "::error::The verification report was not signed (is ECOMMERCE_VERIFY_SIGNING_KEY available to this repository?). No release was created; fix the secret and re-run this workflow."
+          exit 1
+
+      # The report is attached as ecommerce-verify-report.json: GitHub
+      # renames an asset whose name starts with a dot to default.<name>.
+      - name: Download the signed verification report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ecommerce-verify-signature
+          path: verification
+
+      - name: Create GitHub Release
+        # SHA-pinned: this step runs with contents: write.
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          name: v${{ steps.version.outputs.version }}
+          body_path: release_notes.txt
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+          files: |
+            verification/ecommerce-verify-report.json
+            verification/verify-report.sig
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Packagist
+        if: success()
+        env:
+          PACKAGIST_USERNAME: ${{ secrets.PACKAGIST_USERNAME }}
+          PACKAGIST_API_TOKEN: ${{ secrets.PACKAGIST_API_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          curl -sS --fail --max-time 30 -X POST \
+            "https://packagist.org/api/update-package?username=${PACKAGIST_USERNAME}&apiToken=${PACKAGIST_API_TOKEN}" \
+            -d "{\"repository\":{\"url\":\"https://github.com/${REPOSITORY}\"}}" \
+            -H "Content-Type: application/json"
+
+  # Imports docs/ and CHANGELOG.md into docs.artisanpackui.dev. Everything
+  # under docs/ is published, so keep audit reports and plans out of it.
+  sync-docs:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    name: Import docs on docs site
+
+    steps:
+      - name: Queue documentation and changelog imports
+        env:
+          DOCS_API_TOKEN: ${{ secrets.DOCS_API_TOKEN }}
+          DOCS_PACKAGE_SLUG: ${{ vars.DOCS_PACKAGE_SLUG || github.event.repository.name }}
+        run: |
+          if [ -z "$DOCS_API_TOKEN" ]; then
+            echo "::notice::DOCS_API_TOKEN is not set; skipping docs-site import."
+            exit 0
+          fi
+
+          # No --retry: curl would also retry a POST that timed out after the
+          # docs site accepted it, queueing the import twice. Re-run this job
+          # if the import fails.
+          for IMPORT in import-docs import-changelog; do
+            echo "Triggering $IMPORT for $DOCS_PACKAGE_SLUG"
+            curl --fail-with-body -sS --connect-timeout 10 --max-time 60 -X POST \
+              "https://docs.artisanpackui.dev/api/v1/packages/${DOCS_PACKAGE_SLUG}/${IMPORT}" \
+              -H "Authorization: Bearer ${DOCS_API_TOKEN}" \
+              -H "Accept: application/json"
+            echo
+          done

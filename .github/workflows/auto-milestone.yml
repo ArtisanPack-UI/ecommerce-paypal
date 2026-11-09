@@ -1,0 +1,14 @@
+name: Auto-assign milestone
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+
+jobs:
+  auto-milestone:
+    permissions:
+      issues: write
+    uses: ArtisanPack-UI/.github/.github/workflows/auto-milestone.yml@main

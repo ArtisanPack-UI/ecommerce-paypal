@@ -1,0 +1,9 @@
+# Boots the package in Orchestra Testbench's skeleton so engine Artisan
+# commands can run outside a host app — e.g. CI's
+# `vendor/bin/testbench ecommerce:lint:pci-columns`.
+providers:
+  - Laravel\Sanctum\SanctumServiceProvider
+  - Laravel\Scout\ScoutServiceProvider
+  - ArtisanPackUI\Hooks\Providers\HooksServiceProvider
+  - ArtisanPackUI\Ecommerce\Providers\EcommerceServiceProvider
+  - ArtisanPackUI\EcommercePayPal\EcommercePayPalServiceProvider
