@@ -16,6 +16,7 @@ declare( strict_types=1 );
 namespace ArtisanPackUI\EcommercePayPal;
 
 use ArtisanPackUI\Ecommerce\Models\Cart;
+use ArtisanPackUI\Ecommerce\Models\Customer;
 use ArtisanPackUI\Ecommerce\Registries\PaymentGatewayRegistry;
 use ArtisanPackUI\Ecommerce\Registries\SatelliteRegistry;
 use ArtisanPackUI\Ecommerce\Registries\SettingsRegistry;
@@ -35,10 +36,15 @@ use ArtisanPackUI\EcommercePayPal\Gateways\PayPalGooglePayGateway;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalWalletGateway;
 use ArtisanPackUI\EcommercePayPal\Jobs\ProcessPayPalWebhook;
 use ArtisanPackUI\EcommercePayPal\Livewire\PayLaterMessage as PayLaterMessageComponent;
+use ArtisanPackUI\EcommercePayPal\Livewire\Payment\PayPalApplePay;
 use ArtisanPackUI\EcommercePayPal\Livewire\Payment\PayPalButtons;
+use ArtisanPackUI\EcommercePayPal\Livewire\Payment\PayPalCardFields;
+use ArtisanPackUI\EcommercePayPal\Livewire\Payment\PayPalGooglePay;
+use ArtisanPackUI\EcommercePayPal\Livewire\Payment\PayPalPaymentDriver;
 use ArtisanPackUI\EcommercePayPal\Payloads\OrderPayloadBuilder;
 use ArtisanPackUI\EcommercePayPal\Satellite\PayPalUninstaller;
 use ArtisanPackUI\EcommercePayPal\Settings\PayPalSettings;
+use ArtisanPackUI\EcommercePayPal\Vault\PayPalVault;
 use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalOrderLocator;
 use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalWebhookProcessor;
 use ArtisanPackUI\EcommerceStorefrontLivewire\Registries\PaymentDriverRegistry;
@@ -126,6 +132,20 @@ class EcommercePayPalServiceProvider extends ServiceProvider
     ];
 
     /**
+     * The storefront-livewire payment drivers (spec §9.2), one per gateway.
+     *
+     * @since 1.0.0
+     *
+     * @var array<int, class-string<PayPalPaymentDriver>>
+     */
+    public const DRIVERS = [
+        PayPalButtons::class,
+        PayPalCardFields::class,
+        PayPalApplePay::class,
+        PayPalGooglePay::class,
+    ];
+
+    /**
      * Registers the package configuration.
      *
      * @since 1.0.0
@@ -150,6 +170,7 @@ class EcommercePayPalServiceProvider extends ServiceProvider
 
         $this->app->singleton( OrderPayloadBuilder::class );
         $this->app->singleton( PayPalOrderLocator::class );
+        $this->app->singleton( PayPalVault::class );
     }
 
     /**
@@ -170,6 +191,8 @@ class EcommercePayPalServiceProvider extends ServiceProvider
         $this->registerTranslations();
         $this->registerMigrations();
         $this->registerCommands();
+        $this->registerRoutes();
+        $this->registerVaultHooks();
 
         // Settings first: defining them applies the admin's stored values
         // to config, which decides whether the gateways register.
@@ -333,6 +356,41 @@ class EcommercePayPalServiceProvider extends ServiceProvider
     }
 
     /**
+     * Registers the Apple Pay domain association route (spec §9.5) unless
+     * `methods.apple_pay.serve_domain_association` is off.
+     *
+     * @since 1.0.0
+     *
+     * @return void
+     */
+    protected function registerRoutes(): void
+    {
+        if ( ! (bool) config( self::CONFIG_KEY . '.methods.apple_pay.serve_domain_association', true ) ) {
+            return;
+        }
+
+        $this->loadRoutesFrom( dirname( __DIR__ ) . '/routes/web.php' );
+    }
+
+    /**
+     * Erases a customer's vault data when the engine deletes the customer
+     * (spec §10.1). The engine fires the hook after its transaction commits,
+     * with the customer as it was.
+     *
+     * @since 1.0.0
+     *
+     * @return void
+     */
+    protected function registerVaultHooks(): void
+    {
+        addAction( 'ap.ecommerce.customer.deleted', static function ( mixed $customer ): void {
+            if ( $customer instanceof Customer && null !== $customer->getKey() ) {
+                app( PayPalVault::class )->forgetCustomer( (int) $customer->getKey() );
+            }
+        } );
+    }
+
+    /**
      * Registers the setup commands and schedules the daily
      * reauthorization run.
      *
@@ -405,12 +463,14 @@ class EcommercePayPalServiceProvider extends ServiceProvider
             return;
         }
 
-        Livewire::component( PayPalButtons::COMPONENT, PayPalButtons::class );
-
         $registry = $this->app->make( PaymentDriverRegistry::class );
 
-        if ( ! $registry->has( PayPalButtons::DRIVER ) ) {
-            $registry->register( PayPalButtons::DRIVER, PayPalButtons::COMPONENT );
+        foreach ( self::DRIVERS as $driver ) {
+            Livewire::component( $driver::COMPONENT, $driver );
+
+            if ( ! $registry->has( $driver::DRIVER ) ) {
+                $registry->register( $driver::DRIVER, $driver::COMPONENT );
+            }
         }
     }
 

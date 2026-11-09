@@ -15,8 +15,6 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\EcommercePayPal\Livewire\Payment;
 
-use ArtisanPackUI\EcommercePayPal\Support\PayPalCheckoutModule;
-use ArtisanPackUI\EcommerceStorefrontLivewire\Livewire\Payment\PaymentDriver;
 use Illuminate\Contracts\View\View;
 
 /**
@@ -26,10 +24,12 @@ use Illuminate\Contracts\View\View;
  * The buttons are mounted by `paypal-checkout.js` inside `wire:ignore`.
  * The PayPal Order was created server-side, so the SDK's `createOrder`
  * just returns the session reference. When the buyer approves,
- * {@see self::confirm()} checks the Order with PayPal before telling the
- * checkout it is confirmed. A canceled popup keeps the shopper on the
- * payment step with a polite message and focus on the step heading; an SDK
- * error is reported with {@see self::fail()}.
+ * {@see PayPalPaymentDriver::confirm()} checks the Order with PayPal before
+ * telling the checkout it is confirmed. A signed-in shopper can tick "Save
+ * PayPal for faster checkout" when vaulting is on (spec §10.2). A canceled
+ * popup keeps the shopper on the payment step with a polite message and
+ * focus on the step heading; an SDK error is reported with
+ * {@see self::fail()}.
  *
  * When the capture at finalize answered `instrument_declined`, the gateway's
  * client config sets `options.restart`: the re-mounted buttons say so and
@@ -45,7 +45,7 @@ use Illuminate\Contracts\View\View;
  *
  * @since      1.0.0
  */
-class PayPalButtons extends PaymentDriver
+class PayPalButtons extends PayPalPaymentDriver
 {
     /**
      * The driver key.
@@ -66,43 +66,6 @@ class PayPalButtons extends PaymentDriver
     public const COMPONENT = 'artisanpack-ecommerce-paypal-buttons';
 
     /**
-     * Checks the Order the buyer approved and reports it to the checkout.
-     * Called by the view's script from the SDK's `onApprove`.
-     *
-     * @since 1.0.0
-     *
-     * @param  string|null  $orderId  The PayPal Order the SDK approved.
-     *
-     * @return void
-     */
-    public function confirm( ?string $orderId = null ): void
-    {
-        if ( null === $orderId || '' === $this->reference || ! hash_equals( $this->reference, $orderId ) ) {
-            $this->failed( __( 'Your PayPal payment couldn\'t be confirmed. Try again.' ) );
-
-            return;
-        }
-
-        $session = $this->session();
-
-        if ( null === $session ) {
-            $this->failed( __( 'We couldn\'t check your payment with PayPal. Try again.' ) );
-
-            return;
-        }
-
-        if ( $session->isConfirmed() ) {
-            $this->confirmed();
-
-            return;
-        }
-
-        $this->failed( $session->requiresAction()
-            ? __( 'PayPal needs you to finish another step. Try again.' )
-            : __( 'Your PayPal payment wasn\'t approved. Try again or use another payment method.' ) );
-    }
-
-    /**
      * Renders the component.
      *
      * @since 1.0.0
@@ -111,43 +74,48 @@ class PayPalButtons extends PaymentDriver
      */
     public function render(): View
     {
-        $clientId = is_string( $this->config['publishable_key'] ?? null ) ? trim( $this->config['publishable_key'] ) : '';
-        $orderId  = is_string( $this->config['client_secret'] ?? null ) ? trim( $this->config['client_secret'] ) : '';
-        $options  = is_array( $this->config['options'] ?? null ) ? $this->config['options'] : [];
+        $options = $this->options();
 
         return view( 'ecommerce-paypal::livewire.payment.paypal-buttons', [
-            'available' => '' !== $clientId && '' !== $orderId,
+            'available' => $this->available(),
             'restart'   => true === ( $options['restart'] ?? false ),
-            'paypal'    => [
-                'module'  => self::moduleUrl(),
-                'config'  => [
-                    'driver'          => self::DRIVER,
-                    'publishable_key' => $clientId,
-                    'client_secret'   => $orderId,
-                    'options'         => $options,
-                ],
-                'heading'  => 'ec-checkout-step-payment',
-                'messages' => [
-                    'loadFailed' => __( 'PayPal couldn\'t load. Check your connection and reload the page.' ),
-                    'failed'     => __( 'Your PayPal payment couldn\'t be completed. Try again or use another payment method.' ),
-                    'canceled'   => __( 'You closed PayPal before paying. You can try again or choose another payment method.' ),
-                    'ineligible' => __( 'PayPal isn\'t available for this order. Choose another payment method.' ),
-                    'confirming' => __( 'Confirming your PayPal payment…' ),
-                ],
-            ],
+            'canSave'   => $this->vaultAvailable(),
+            'paypal'    => $this->scriptSettings( [
+                'loadFailed' => __( 'PayPal couldn\'t load. Check your connection and reload the page.' ),
+                'failed'     => __( 'Your PayPal payment couldn\'t be completed. Try again or use another payment method.' ),
+                'canceled'   => __( 'You closed PayPal before paying. You can try again or choose another payment method.' ),
+                'ineligible' => __( 'PayPal isn\'t available for this order. Choose another payment method.' ),
+                'confirming' => __( 'Confirming your PayPal payment…' ),
+            ] ),
         ] );
     }
 
     /**
-     * Where the published `paypal-checkout.js` is served from
-     * ({@see PayPalCheckoutModule::url()}).
+     * The driver key.
      *
      * @since 1.0.0
      *
      * @return string
      */
-    public static function moduleUrl(): string
+    protected function driverKey(): string
     {
-        return PayPalCheckoutModule::url();
+        return self::DRIVER;
+    }
+
+    /**
+     * The confirmation failure messages.
+     *
+     * @since 1.0.0
+     *
+     * @return array{mismatch: string, unreachable: string, action: string, declined: string}
+     */
+    protected function confirmMessages(): array
+    {
+        return [
+            'mismatch'    => __( 'Your PayPal payment couldn\'t be confirmed. Try again.' ),
+            'unreachable' => __( 'We couldn\'t check your payment with PayPal. Try again.' ),
+            'action'      => __( 'PayPal needs you to finish another step. Try again.' ),
+            'declined'    => __( 'Your PayPal payment wasn\'t approved. Try again or use another payment method.' ),
+        ];
     }
 }

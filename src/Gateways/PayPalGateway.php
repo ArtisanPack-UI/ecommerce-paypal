@@ -37,6 +37,7 @@ use ArtisanPackUI\EcommercePayPal\Support\PayPalDeclines;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalLocale;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalMoney;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalOrderMeta;
+use ArtisanPackUI\EcommercePayPal\Vault\PayPalVault;
 use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalOrderLocator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -552,8 +553,12 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
      * gateway in the family, so a checkout page that renders several of them
      * loads the SDK once. The result passes through
      * `ap.ecommerce.paypal.clientConfig` `(array $config, Cart $cart,
-     * PaymentSession $session, PayPalGateway $gateway)`, which is where a
-     * `user_id_token` for returning vault buyers is added.
+     * PaymentSession $session, PayPalGateway $gateway)`.
+     *
+     * For gateways that vault (spec §10.2), `options.vault` tells the driver
+     * whether to offer "save" (`available`) and what the shopper chose
+     * (`save`), and a returning buyer gets a freshly minted `user_id_token`
+     * ({@see self::vaultOptions()}).
      *
      * @since 1.0.0
      *
@@ -578,6 +583,8 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
             ], $sdk['options'], $this->driverOptions() ),
         ];
 
+        $config['options'] = array_merge( $config['options'], $this->vaultOptions( $cart, (bool) $config['options']['restart'] ) );
+
         $filtered = applyFilters( 'ap.ecommerce.paypal.clientConfig', $config, $cart, $session, $this );
 
         if ( ! is_array( $filtered ) || ! is_array( $filtered['options'] ?? null ) ) {
@@ -600,6 +607,38 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
         }
 
         return $locked;
+    }
+
+    /**
+     * Whether a card or wallet payment whose 3-D Secure result is `$shift`
+     * must be refused: `methods.card.require_liability_shift` is on and the
+     * result is `NO` or `UNKNOWN` (spec §9.4). PayPal-wallet payments are
+     * never refused here.
+     *
+     * @since 1.0.0
+     *
+     * @param  string|null  $source  PayPal payment source.
+     * @param  string|null  $shift   `authentication_result.liability_shift`.
+     *
+     * @return bool
+     */
+    public static function rejectsLiabilityShift( ?string $source, ?string $shift ): bool
+    {
+        return in_array( $source, self::CARD_SOURCES, true )
+            && (bool) config( 'artisanpack.ecommerce-paypal.methods.card.require_liability_shift', true )
+            && in_array( strtoupper( (string) $shift ), [ 'NO', 'UNKNOWN' ], true );
+    }
+
+    /**
+     * The message shown when a card's 3-D Secure result is refused.
+     *
+     * @since 1.0.0
+     *
+     * @return string
+     */
+    public static function liabilityShiftMessage(): string
+    {
+        return __( 'Your bank couldn\'t verify this card. Try another card or payment method.' );
     }
 
     /**
@@ -730,6 +769,44 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
             && PayPalOrderMeta::describes( $order, $paypalOrderId )
             && (int) PayPalOrderMeta::get( $order, 'instrument_declines', 0 ) > 0
             && null === PayPalOrderMeta::get( $order, 'capture_id' );
+    }
+
+    /**
+     * The vault options of the client config: `vault.available` (vaulting
+     * is on for this gateway, the shopper is signed in and owns the cart,
+     * and the buyer isn't being sent back after a decline), `vault.save`
+     * (they ticked "save"), and a `user_id_token` when they already have a
+     * PayPal customer id. Empty for gateways that don't vault.
+     *
+     * @since 1.0.0
+     *
+     * @param  Cart  $cart        Cart.
+     * @param  bool  $restarting  Whether the buyer is retrying after a decline.
+     *
+     * @return array<string, mixed>
+     */
+    protected function vaultOptions( Cart $cart, bool $restarting ): array
+    {
+        if ( ! $this->supportsSavedInstruments() ) {
+            return [];
+        }
+
+        $vault    = app( PayPalVault::class );
+        $customer = $vault->shopperFor( $cart );
+        $options  = [
+            'vault' => [
+                'available' => null !== $customer && ! $restarting,
+                'save'      => null !== $customer && $vault->wantsToSave( $cart ),
+            ],
+        ];
+
+        $idToken = null === $customer ? null : $vault->idTokenFor( $customer );
+
+        if ( null !== $idToken ) {
+            $options['user_id_token'] = $idToken;
+        }
+
+        return $options;
     }
 
     /**
@@ -896,10 +973,11 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
      * The `PayPal-Request-Id` for creating an Order when the engine passed
      * no idempotency key: a UUID kept on `cart.meta.paypal`.
      *
-     * The id is reused while the cart's gateway, currency, and total are
-     * unchanged and the engine hasn't stored the Order it produced (a retry
-     * after a crash). Once that Order is the cart's payment reference, a new
-     * create means the engine judged it unusable, so a new id is minted.
+     * The id is reused while the cart's gateway, currency, total, and the
+     * shopper's "save" choice are unchanged and the engine hasn't stored the
+     * Order it produced (a retry after a crash). Once that Order is the
+     * cart's payment reference, a new create means the engine judged it
+     * unusable, so a new id is minted.
      *
      * @since 1.0.0
      *
@@ -915,6 +993,7 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
             $this->key(),
             strtoupper( (string) ( $cart->getAttribute( 'currency' ) ?: $cart->getAttribute( 'total_currency' ) ?: '' ) ),
             (string) ( $cart->getAttribute( 'total_amount' ) ?? '' ),
+            app( PayPalVault::class )->wantsToSave( $cart ) ? 'save' : '',
         ] ) );
         $stored      = isset( $paypal['request_id'] ) && is_string( $paypal['request_id'] ) ? $paypal['request_id'] : '';
         $usedBy      = isset( $paypal['request_order_id'] ) ? (string) $paypal['request_order_id'] : '';
@@ -1006,22 +1085,14 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
      */
     protected function liabilityShiftRefusal( PayPalOrder $order, PaymentSession $session ): ?PaymentResult
     {
-        if ( ! in_array( $order->paymentSourceType(), self::CARD_SOURCES, true ) ) {
-            return null;
-        }
-
-        if ( ! (bool) config( 'artisanpack.ecommerce-paypal.methods.card.require_liability_shift', true ) ) {
-            return null;
-        }
-
-        if ( ! in_array( strtoupper( (string) $order->liabilityShift() ), [ 'NO', 'UNKNOWN' ], true ) ) {
+        if ( ! self::rejectsLiabilityShift( $order->paymentSourceType(), $order->liabilityShift() ) ) {
             return null;
         }
 
         return PaymentResult::terminalFailure(
             $session->amount,
             'liability_shift_rejected',
-            __( 'Your bank couldn\'t verify this card. Try another card or payment method.' ),
+            self::liabilityShiftMessage(),
         );
     }
 
@@ -1270,6 +1341,10 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
         }
 
         PayPalOrderMeta::merge( $order, self::filled( $values ), $paypalOrder->id() );
+
+        if ( null !== $paypalOrder->vault() ) {
+            app( PayPalVault::class )->recordFromOrder( $order, $paypalOrder, $this->key() );
+        }
     }
 
     /**

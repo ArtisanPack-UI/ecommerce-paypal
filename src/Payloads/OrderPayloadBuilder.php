@@ -20,6 +20,7 @@ use ArtisanPackUI\Ecommerce\Models\CartItem;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalGateway;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalLocale;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalMoney;
+use ArtisanPackUI\EcommercePayPal\Vault\PayPalVault;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
 use Money\Currency;
@@ -86,6 +87,15 @@ class OrderPayloadBuilder
     public const STOREFRONT_CANCEL_ROUTE = 'artisanpack.ecommerce.storefront.checkout';
 
     /**
+     * The 3-D Secure methods PayPal accepts for cards.
+     *
+     * @since 1.0.0
+     *
+     * @var array<int, string>
+     */
+    public const THREE_D_SECURE_METHODS = [ 'SCA_WHEN_REQUIRED', 'SCA_ALWAYS' ];
+
+    /**
      * Builds the order body.
      *
      * `$context` keys:
@@ -129,6 +139,12 @@ class OrderPayloadBuilder
         ];
 
         $paymentSource = $this->paymentSource( $cart, $source, $context, $lines['requires_shipping'], isset( $purchaseUnit['shipping'] ) );
+        $attributes    = $this->attributes( $cart, $gateway, $source );
+
+        if ( [] !== $attributes ) {
+            $paymentSource               = $paymentSource ?? [];
+            $paymentSource['attributes'] = $attributes;
+        }
 
         if ( null !== $paymentSource ) {
             $payload['payment_source'] = [ $source => $paymentSource ];
@@ -291,8 +307,9 @@ class OrderPayloadBuilder
      * in the browser.
      *
      * PayPal and Venmo get the full experience context (brand, locale, pay
-     * now, shipping preference, return and cancel URLs). Cards only take
-     * return and cancel URLs (for 3-D Secure redirects). Apple Pay and
+     * now, shipping preference, return and cancel URLs). Cards take return
+     * and cancel URLs (for 3-D Secure redirects); their 3-D Secure and vault
+     * attributes are added by {@see self::attributes()}. Apple Pay and
      * Google Pay attach their payment source client-side when the shopper
      * confirms (`confirmOrder`), so the order is created without one.
      *
@@ -327,6 +344,54 @@ class OrderPayloadBuilder
             'card'  => [] === $urls ? null : [ 'experience_context' => $urls ],
             default => null,
         };
+    }
+
+    /**
+     * The `payment_source.{source}.attributes` (spec §9.4, §10.2):
+     *
+     * - cards: `verification.method`, the 3-D Secure setting
+     *   (`SCA_WHEN_REQUIRED` or `SCA_ALWAYS`);
+     * - PayPal and cards, when the signed-in shopper ticked "save" and the
+     *   gateway vaults: `vault` (`store_in_vault: ON_SUCCESS`; PayPal also
+     *   gets `usage_type: MERCHANT` and `customer_type: CONSUMER`, which
+     *   PayPal's card vault schema doesn't take), and `customer.id` when the
+     *   shopper already has a PayPal customer id.
+     *
+     * @since 1.0.0
+     *
+     * @param  Cart           $cart     Cart.
+     * @param  PayPalGateway  $gateway  Gateway.
+     * @param  string         $source   Payment source.
+     *
+     * @return array<string, mixed>
+     */
+    protected function attributes( Cart $cart, PayPalGateway $gateway, string $source ): array
+    {
+        $attributes = [];
+
+        if ( 'card' === $source ) {
+            $method = strtoupper( (string) config( 'artisanpack.ecommerce-paypal.methods.card.three_d_secure', 'SCA_WHEN_REQUIRED' ) );
+
+            $attributes['verification'] = [ 'method' => in_array( $method, self::THREE_D_SECURE_METHODS, true ) ? $method : 'SCA_WHEN_REQUIRED' ];
+        }
+
+        $vault = app( PayPalVault::class );
+
+        if ( ! $gateway->supportsSavedInstruments() || ! $vault->savesFor( $cart, $source ) ) {
+            return $attributes;
+        }
+
+        $attributes['vault'] = 'paypal' === $source
+            ? [ 'store_in_vault' => 'ON_SUCCESS', 'usage_type' => 'MERCHANT', 'customer_type' => 'CONSUMER' ]
+            : [ 'store_in_vault' => 'ON_SUCCESS' ];
+
+        $customerId = $vault->paypalCustomerId( (int) $cart->customer_id );
+
+        if ( null !== $customerId ) {
+            $attributes['customer'] = [ 'id' => $customerId ];
+        }
+
+        return $attributes;
     }
 
     /**

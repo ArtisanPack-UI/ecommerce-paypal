@@ -379,34 +379,114 @@ export async function mountButtons( container, config, callbacks = {} ) {
 }
 
 /**
+ * Resolves a CSS color (including `oklch()` and `var()` values daisyUI
+ * themes use) to `rgb()`/`rgba()`, which PayPal's hosted fields accept.
+ * Falls back to the value as given when the browser can't paint it.
+ *
+ * @param {string}      value   CSS color.
+ * @param {HTMLElement} element Element whose custom properties apply.
+ *
+ * @returns {string}
+ */
+function resolveColor( value, element ) {
+    if ( ! value ) {
+        return '';
+    }
+
+    const probe = document.createElement( 'span' );
+
+    probe.style.color   = value;
+    probe.style.display = 'none';
+    element.appendChild( probe );
+
+    const computed = window.getComputedStyle( probe ).color || value;
+
+    probe.remove();
+
+    const canvas  = document.createElement( 'canvas' );
+    let   context = null;
+
+    try {
+        context = canvas.getContext?.( '2d', { willReadFrequently: true } ) ?? null;
+    } catch {
+        context = null;
+    }
+
+    if ( ! context ) {
+        return computed;
+    }
+
+    canvas.width  = 1;
+    canvas.height = 1;
+    context.fillStyle = computed;
+    context.fillRect( 0, 0, 1, 1 );
+
+    const [ red, green, blue, alpha ] = context.getImageData( 0, 0, 1, 1 ).data;
+
+    return 255 === alpha ? `rgb(${ red }, ${ green }, ${ blue })` : `rgba(${ red }, ${ green }, ${ blue }, ${ ( alpha / 255 ).toFixed( 2 ) })`;
+}
+
+/**
+ * The hosted card fields' style, taken from the page's daisyUI tokens
+ * (`--color-base-content`, `--color-error`) and font, so the fields match
+ * the theme the host compiled. PayPal only takes plain colors and a few
+ * font and spacing properties inside its frames; borders and backgrounds
+ * belong on the containers.
+ *
+ * @since 1.0.0
+ *
+ * @param {HTMLElement} element Element inside the themed page.
+ *
+ * @returns {object} A `CardFields` `style` object.
+ */
+export function cardFieldStyle( element ) {
+    const computed = window.getComputedStyle( element );
+    const token    = ( name, fallback ) => resolveColor( computed.getPropertyValue( name ).trim() || fallback, element );
+    const color    = token( '--color-base-content', computed.color || '#1f2937' );
+    const font     = computed.fontFamily || 'system-ui, sans-serif';
+
+    return {
+        input: { color, 'font-family': font, 'font-size': '16px', padding: '0.75rem' },
+        '.invalid': { color: token( '--color-error', '#b91c1c' ) },
+        ':focus': { color },
+    };
+}
+
+/**
  * Mounts PayPal's hosted card fields. `fields` maps `number`, `expiry`,
  * `cvv`, and (optionally) `name` to their containers.
+ *
+ * `onChange` gets PayPal's field state on every change and `onBlur` when a
+ * field loses focus (falling back to `onChange`), so a wrapper can clear an
+ * error while the shopper types and show one once they move on. The style
+ * defaults to {@see cardFieldStyle} of the first container.
  *
  * @since 1.0.0
  *
  * @param {Record<string, HTMLElement>} fields    Field containers.
  * @param {object}                      config    Client config.
- * @param {object}                      [callbacks] Callbacks: `onApprove`, `onError`, `onIneligible`, `onChange` (field validity), `style`.
+ * @param {object}                      [callbacks] Callbacks: `onApprove`, `onError`, `onIneligible`, `onChange`, `onBlur`, and `style`.
  *
- * @returns {Promise<{ eligible: boolean, submit: ( options?: object ) => Promise<unknown>, close: () => void }>}
+ * @returns {Promise<{ eligible: boolean, submit: ( options?: object ) => Promise<unknown>, getState: () => Promise<object|undefined>, close: () => void }>}
  */
 export async function mountCardFields( fields, config, callbacks = {} ) {
     const paypal = await loadSdk( config, { components: [ 'card-fields' ] } );
+    const first  = Object.values( fields ).find( Boolean );
     const card   = paypal.CardFields( {
-        style: callbacks.style || {},
+        style: callbacks.style || ( first ? cardFieldStyle( first ) : {} ),
         createOrder: () => orderIdOf( config ),
         onApprove: ( data ) => call( callbacks.onApprove, data ),
         onError: ( error ) => call( callbacks.onError, error ),
         inputEvents: {
             onChange: ( state ) => call( callbacks.onChange, state ),
-            onBlur: ( state ) => call( callbacks.onChange, state ),
+            onBlur: ( state ) => call( callbacks.onBlur || callbacks.onChange, state ),
         },
     } );
 
     if ( ! card.isEligible() ) {
         call( callbacks.onIneligible );
 
-        return { eligible: false, submit: async () => undefined, close: () => {} };
+        return { eligible: false, submit: async () => undefined, getState: async () => undefined, close: () => {} };
     }
 
     const renderers = { name: 'NameField', number: 'NumberField', expiry: 'ExpiryField', cvv: 'CVVField' };
@@ -424,6 +504,7 @@ export async function mountCardFields( fields, config, callbacks = {} ) {
     return {
         eligible: true,
         submit: ( submitOptions ) => card.submit( submitOptions ),
+        getState: async () => ( 'function' === typeof card.getState ? card.getState() : undefined ),
         close: () => rendered.forEach( ( instance ) => call( instance.close?.bind( instance ) ) ),
     };
 }

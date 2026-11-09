@@ -18,6 +18,7 @@ namespace ArtisanPackUI\EcommercePayPal\Console\Commands;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalClient;
 use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalApiException;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalWalletGateway;
+use ArtisanPackUI\EcommercePayPal\Support\ApplePayDomainAssociation;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalCurrencies;
 use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalWebhookEvents;
 use Illuminate\Console\Command;
@@ -46,7 +47,7 @@ class VerifyCredentialsCommand extends Command
      *
      * @var string
      */
-    public const APPLE_PAY_DOMAIN_PATH = '/.well-known/apple-developer-merchantid-domain-association';
+    public const APPLE_PAY_DOMAIN_PATH = ApplePayDomainAssociation::PATH;
 
     /**
      * Method keys and their labels.
@@ -290,6 +291,13 @@ class VerifyCredentialsCommand extends Command
 
         $url = $this->origin() . self::APPLE_PAY_DOMAIN_PATH;
 
+        // Apple only fetches the file over HTTPS.
+        if ( ! str_starts_with( $url, 'https://' ) ) {
+            $this->result( __( 'Apple Pay domain file' ), false, __( 'Apple Pay needs the store served over HTTPS (APP_URL is :url)', [ 'url' => url( '/' ) ] ) );
+
+            return;
+        }
+
         try {
             // Apple doesn't follow redirects, so neither does the check.
             $response  = $http->timeout( 10 )->withoutRedirecting()->get( $url );
@@ -337,13 +345,11 @@ class VerifyCredentialsCommand extends Command
             return false;
         }
 
-        $configured = trim( (string) config( 'artisanpack.ecommerce-paypal.methods.apple_pay.domain_association', '' ) );
-        $isContents = '' !== $configured
-            && ! str_starts_with( strtolower( $configured ), 'https://' )
-            && ! str_starts_with( strtolower( $configured ), 'http://' )
-            && ! is_file( $configured );
+        if ( 'contents' !== ApplePayDomainAssociation::source() ) {
+            return ApplePayDomainAssociation::isAssociation( $body );
+        }
 
-        return ! $isContents || $configured === $body;
+        return trim( (string) config( 'artisanpack.ecommerce-paypal.methods.apple_pay.domain_association', '' ) ) === $body;
     }
 
     /**
