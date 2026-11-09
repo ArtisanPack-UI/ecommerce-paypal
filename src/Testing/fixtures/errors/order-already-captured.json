@@ -1,0 +1,8 @@
+{
+    "name": "UNPROCESSABLE_ENTITY",
+    "details": [
+        { "issue": "ORDER_ALREADY_CAPTURED", "description": "Order already captured. If 'intent=CAPTURE' only one capture per order is allowed." }
+    ],
+    "message": "The requested action could not be performed, semantically incorrect, or failed business validation.",
+    "debug_id": "f5f43a5c5d1f2"
+}

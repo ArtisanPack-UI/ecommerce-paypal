@@ -1,0 +1,13 @@
+{
+    "id": "3C679366HH908993F",
+    "status": "PENDING",
+    "status_details": { "reason": "PENDING_REVIEW" },
+    "amount": { "currency_code": "USD", "value": "100.00" },
+    "final_capture": true,
+    "supplementary_data": { "related_ids": { "order_id": "5O190127TN364715T" } },
+    "create_time": "2026-11-09T12:05:00Z",
+    "update_time": "2026-11-09T12:05:00Z",
+    "links": [
+        { "href": "https://api-m.sandbox.paypal.com/v2/payments/captures/3C679366HH908993F", "rel": "self", "method": "GET" }
+    ]
+}

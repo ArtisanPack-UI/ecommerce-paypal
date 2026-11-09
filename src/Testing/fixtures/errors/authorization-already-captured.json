@@ -1,0 +1,8 @@
+{
+    "name": "UNPROCESSABLE_ENTITY",
+    "details": [
+        { "issue": "AUTHORIZATION_ALREADY_CAPTURED", "description": "Authorization has been previously captured and hence cannot be voided." }
+    ],
+    "message": "The requested action could not be performed, semantically incorrect, or failed business validation.",
+    "debug_id": "f5f43a5c5d1f5"
+}

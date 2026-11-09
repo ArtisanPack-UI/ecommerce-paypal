@@ -1,0 +1,12 @@
+{
+    "id": "5C991763VB2781612",
+    "customer": { "id": "customer_4029352050" },
+    "status": "PAYER_ACTION_REQUIRED",
+    "payment_source": {
+        "paypal": { "usage_type": "MERCHANT", "customer_type": "CONSUMER" }
+    },
+    "links": [
+        { "rel": "approve", "href": "https://www.sandbox.paypal.com/agreements/approve?approval_session_id=5C991763VB2781612", "method": "GET" },
+        { "rel": "self", "href": "https://api-m.sandbox.paypal.com/v3/vault/setup-tokens/5C991763VB2781612", "method": "GET" }
+    ]
+}

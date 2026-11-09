@@ -15,8 +15,27 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\EcommercePayPal;
 
+use ArtisanPackUI\Ecommerce\Models\Cart;
+use ArtisanPackUI\Ecommerce\Registries\PaymentGatewayRegistry;
 use ArtisanPackUI\Ecommerce\Registries\SatelliteRegistry;
+use ArtisanPackUI\Ecommerce\Registries\SettingsRegistry;
+use ArtisanPackUI\Ecommerce\Settings\SettingsRepository;
+use ArtisanPackUI\EcommercePayPal\Api\PayPalClient;
+use ArtisanPackUI\EcommercePayPal\Api\PayPalCredentials;
+use ArtisanPackUI\EcommercePayPal\Api\PayPalTokenProvider;
+use ArtisanPackUI\EcommercePayPal\Console\Commands\InstallCommand;
+use ArtisanPackUI\EcommercePayPal\Console\Commands\RegisterWebhookCommand;
+use ArtisanPackUI\EcommercePayPal\Console\Commands\VerifyCredentialsCommand;
+use ArtisanPackUI\EcommercePayPal\Gateways\PayPalApplePayGateway;
+use ArtisanPackUI\EcommercePayPal\Gateways\PayPalCardGateway;
+use ArtisanPackUI\EcommercePayPal\Gateways\PayPalGateway;
+use ArtisanPackUI\EcommercePayPal\Gateways\PayPalGooglePayGateway;
+use ArtisanPackUI\EcommercePayPal\Gateways\PayPalWalletGateway;
+use ArtisanPackUI\EcommercePayPal\Payloads\OrderPayloadBuilder;
 use ArtisanPackUI\EcommercePayPal\Satellite\PayPalUninstaller;
+use ArtisanPackUI\EcommercePayPal\Settings\PayPalSettings;
+use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\ServiceProvider;
 
 /**
@@ -82,6 +101,20 @@ class EcommercePayPalServiceProvider extends ServiceProvider
     ];
 
     /**
+     * The gateway family (spec §6.1), in checkout order.
+     *
+     * @since 1.0.0
+     *
+     * @var array<int, class-string<PayPalGateway>>
+     */
+    public const GATEWAYS = [
+        PayPalWalletGateway::class,
+        PayPalCardGateway::class,
+        PayPalApplePayGateway::class,
+        PayPalGooglePayGateway::class,
+    ];
+
+    /**
      * Registers the package configuration.
      *
      * @since 1.0.0
@@ -91,6 +124,20 @@ class EcommercePayPalServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeConfigFrom( self::configPath(), self::CONFIG_KEY );
+
+        $this->app->singleton( PayPalTokenProvider::class, static fn ( Application $app ): PayPalTokenProvider => new PayPalTokenProvider(
+            $app->make( HttpFactory::class ),
+            $app->make( 'cache' )->store(),
+        ) );
+
+        // No fixed credentials: the client reads config on every call, so a
+        // settings change (mode, client id) applies straight away.
+        $this->app->singleton( PayPalClient::class, static fn ( Application $app ): PayPalClient => new PayPalClient(
+            $app->make( HttpFactory::class ),
+            $app->make( PayPalTokenProvider::class ),
+        ) );
+
+        $this->app->singleton( OrderPayloadBuilder::class );
     }
 
     /**
@@ -110,6 +157,25 @@ class EcommercePayPalServiceProvider extends ServiceProvider
         $this->registerViews();
         $this->registerTranslations();
         $this->registerMigrations();
+        $this->registerCommands();
+
+        // Settings first: defining them applies the admin's stored values
+        // to config, which decides whether the gateways register.
+        $this->registerSettings();
+        $this->registerGateways();
+    }
+
+    /**
+     * Whether the gateways should be registered: the package is enabled and
+     * both credentials are set (spec §6.2).
+     *
+     * @since 1.0.0
+     *
+     * @return bool
+     */
+    public static function gatewaysActive(): bool
+    {
+        return (bool) config( self::CONFIG_KEY . '.enabled', false ) && PayPalCredentials::configured();
     }
 
     /**
@@ -247,5 +313,76 @@ class EcommercePayPalServiceProvider extends ServiceProvider
     protected function registerMigrations(): void
     {
         $this->loadMigrationsFrom( self::migrationsPath() );
+    }
+
+    /**
+     * Registers the setup commands.
+     *
+     * @since 1.0.0
+     *
+     * @return void
+     */
+    protected function registerCommands(): void
+    {
+        if ( ! $this->app->runningInConsole() ) {
+            return;
+        }
+
+        $this->commands( [
+            InstallCommand::class,
+            VerifyCredentialsCommand::class,
+            RegisterWebhookCommand::class,
+        ] );
+    }
+
+    /**
+     * Adds the `paypal` settings group.
+     *
+     * @since 1.0.0
+     *
+     * @return void
+     */
+    protected function registerSettings(): void
+    {
+        PayPalSettings::register(
+            $this->app->make( SettingsRegistry::class ),
+            $this->app->make( SettingsRepository::class ),
+        );
+    }
+
+    /**
+     * Registers the four gateways and the per-cart availability filter.
+     *
+     * Every gateway in the family is registered while the package is
+     * active, even a method that is switched off, so orders placed through
+     * it can still be refunded and reconciled. The availability filter keeps
+     * switched-off methods out of checkout.
+     *
+     * @since 1.0.0
+     *
+     * @return void
+     */
+    protected function registerGateways(): void
+    {
+        if ( ! self::gatewaysActive() ) {
+            return;
+        }
+
+        $registry = $this->app->make( PaymentGatewayRegistry::class );
+
+        foreach ( self::GATEWAYS as $gateway ) {
+            $registry->register( $gateway::KEY, $gateway );
+        }
+
+        addFilter( 'ap.ecommerce.payment.availableGateways', static function ( mixed $gateways, mixed $cart = null ): mixed {
+            if ( ! is_array( $gateways ) || ! $cart instanceof Cart ) {
+                return $gateways;
+            }
+
+            return array_filter(
+                $gateways,
+                static fn ( mixed $gateway ): bool => ! $gateway instanceof PayPalGateway || $gateway->isAvailableFor( $cart ),
+            );
+        }, 10, 2 );
     }
 }
