@@ -17,10 +17,13 @@ use ArtisanPackUI\EcommercePayPal\Gateways\PayPalCardGateway;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalGooglePayGateway;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalWalletGateway;
 use ArtisanPackUI\EcommercePayPal\Testing\PayPalFake;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
 use Money\Currency;
 use Money\Money;
 use Tests\Support\CartBuilder;
+
+uses( RefreshDatabase::class );
 
 /**
  * Re-boots the package with `$config` against fresh registries.
@@ -237,8 +240,22 @@ describe( 'status mapping', function (): void {
 } );
 
 describe( 'client config', function (): void {
-    it( 'describes the browser step', function (): void {
-        config( [ 'artisanpack.ecommerce-paypal.client_id' => 'public-client-id', 'artisanpack.ecommerce-paypal.intent' => 'authorize' ] );
+    beforeEach( function (): void {
+        config( [
+            'artisanpack.ecommerce-paypal.client_id'                  => 'public-client-id',
+            'artisanpack.ecommerce-paypal.methods.paypal.enabled'     => true,
+            'artisanpack.ecommerce-paypal.methods.paypal.pay_later'   => true,
+            'artisanpack.ecommerce-paypal.methods.paypal.venmo'       => false,
+            'artisanpack.ecommerce-paypal.methods.card.enabled'       => true,
+            'artisanpack.ecommerce-paypal.methods.apple_pay.enabled'  => false,
+            'artisanpack.ecommerce-paypal.methods.google_pay.enabled' => true,
+            'artisanpack.ecommerce-paypal.pay_later_messaging'        => [ 'checkout' => true, 'cart' => false, 'product' => false ],
+        ] );
+    } );
+
+    it( 'describes the browser step with the Order as the client secret', function (): void {
+        config( [ 'artisanpack.ecommerce-paypal.intent' => 'authorize' ] );
+        app()->setLocale( 'fr' );
 
         $session = new PaymentSession( 'paypal-card', 'ORDER-1', new Money( 1000, new Currency( 'EUR' ) ) );
         $config  = app( PayPalCardGateway::class )->clientConfig( CartBuilder::make( [ [ 'Shirt', 1000, 1 ] ] ), $session );
@@ -247,9 +264,90 @@ describe( 'client config', function (): void {
             'driver'          => 'paypal-card-fields',
             'flow'            => 'embedded',
             'publishable_key' => 'public-client-id',
-            'client_secret'   => null,
+            'client_secret'   => 'ORDER-1',
         ] )
-            ->and( $config['options'] )->toBe( [ 'order_id' => 'ORDER-1', 'currency' => 'EUR', 'intent' => 'authorize', 'mode' => 'sandbox' ] )
-            ->and( json_encode( $config ) )->not->toContain( 'client-secret' );
+            ->and( $config['options'] )->toBe( [
+                'order_id'                => 'ORDER-1',
+                'amount'                  => '10.00',
+                'restart'                 => false,
+                'currency'                => 'EUR',
+                'intent'                  => 'authorize',
+                'mode'                    => 'sandbox',
+                'locale'                  => 'fr_FR',
+                'components'              => [ 'buttons', 'messages', 'card-fields', 'googlepay' ],
+                'enable_funding'          => [ 'paylater' ],
+                'disable_funding'         => [ 'venmo', 'card' ],
+                'three_d_secure'          => 'SCA_WHEN_REQUIRED',
+                'require_liability_shift' => true,
+            ] );
+    } );
+
+    it( 'gives every gateway the same SDK components, so the SDK loads once', function (): void {
+        $session    = new PaymentSession( 'paypal', 'ORDER-1', new Money( 1000, new Currency( 'USD' ) ) );
+        $cart       = CartBuilder::make( [ [ 'Shirt', 1000, 1 ] ] );
+        $components = array_map(
+            fn ( string $gateway ): array => app( $gateway )->clientConfig( $cart, $session )['options']['components'],
+            [ PayPalWalletGateway::class, PayPalCardGateway::class, PayPalApplePayGateway::class, PayPalGooglePayGateway::class ],
+        );
+
+        expect( array_unique( $components, SORT_REGULAR ) )->toHaveCount( 1 );
+    } );
+
+    it( 'passes the button style and funding switches to the PayPal buttons', function (): void {
+        config( [ 'artisanpack.ecommerce-paypal.methods.paypal.button' => [ 'layout' => 'horizontal', 'color' => 'blue', 'shape' => 'pill', 'label' => 'pay', 'onclick' => 'alert(1)' ] ] );
+
+        $session = new PaymentSession( 'paypal', 'ORDER-1', new Money( 1000, new Currency( 'USD' ) ) );
+        $options = app( PayPalWalletGateway::class )->clientConfig( CartBuilder::make( [ [ 'Shirt', 1000, 1 ] ] ), $session )['options'];
+
+        expect( $options['button'] )->toBe( [ 'layout' => 'horizontal', 'color' => 'blue', 'shape' => 'pill', 'label' => 'pay' ] )
+            ->and( $options['pay_later'] )->toBeTrue()
+            ->and( $options['venmo'] )->toBeFalse();
+    } );
+
+    it( 'loads only what the enabled methods need', function (): void {
+        config( [
+            'artisanpack.ecommerce-paypal.methods.paypal.pay_later'   => false,
+            'artisanpack.ecommerce-paypal.methods.card.enabled'       => false,
+            'artisanpack.ecommerce-paypal.methods.google_pay.enabled' => false,
+            'artisanpack.ecommerce-paypal.pay_later_messaging'        => [ 'checkout' => false, 'cart' => false, 'product' => false ],
+        ] );
+
+        expect( PayPalWalletGateway::sdkComponents() )->toBe( [ 'buttons' ] )
+            ->and( PayPalWalletGateway::disabledFunding() )->toBe( [ 'venmo', 'paylater' ] )
+            ->and( PayPalWalletGateway::enabledFunding() )->toBe( [] );
+    } );
+
+    it( 'lets a filter add options but not swap the Order or client id', function (): void {
+        addFilter( 'ap.ecommerce.paypal.clientConfig', function ( array $config ): array {
+            $config['options']['user_id_token'] = 'id-token';
+            $config['options']['order_id']      = 'OTHER-ORDER';
+            $config['options']['amount']        = '0.01';
+            $config['client_secret']            = 'OTHER-ORDER';
+            $config['publishable_key']          = 'other-client';
+
+            return $config;
+        } );
+
+        $session = new PaymentSession( 'paypal', 'ORDER-1', new Money( 1000, new Currency( 'USD' ) ) );
+        $config  = app( PayPalWalletGateway::class )->clientConfig( CartBuilder::make( [ [ 'Shirt', 1000, 1 ] ] ), $session );
+
+        expect( $config['options']['user_id_token'] )->toBe( 'id-token' )
+            ->and( $config['options']['order_id'] )->toBe( 'ORDER-1' )
+            ->and( $config['options']['amount'] )->toBe( '10.00' )
+            ->and( $config['client_secret'] )->toBe( 'ORDER-1' )
+            ->and( $config['publishable_key'] )->toBe( 'public-client-id' );
+    } );
+
+    it( 'never includes the client secret or an access token', function (): void {
+        config( [ 'artisanpack.ecommerce-paypal.client_secret' => 'super-secret-value' ] );
+
+        $session = new PaymentSession( 'paypal', 'ORDER-1', new Money( 1000, new Currency( 'USD' ) ) );
+
+        foreach ( [ PayPalWalletGateway::class, PayPalCardGateway::class, PayPalApplePayGateway::class, PayPalGooglePayGateway::class ] as $gateway ) {
+            $json = (string) json_encode( app( $gateway )->clientConfig( CartBuilder::make( [ [ 'Shirt', 1000, 1 ] ] ), $session ) );
+
+            expect( $json )->not->toContain( 'super-secret-value' )
+                ->and( $json )->not->toContain( 'access_token' );
+        }
     } );
 } );

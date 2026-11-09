@@ -1,0 +1,15 @@
+{
+    "private": true,
+    "type": "module",
+    "description": "Builds and tests the shared PayPal checkout module (resources/js/paypal-checkout.js → dist/paypal-checkout.js). dist/ is committed, so Composer users need no Node toolchain.",
+    "scripts": {
+        "build": "vite build",
+        "test": "vitest run",
+        "test:watch": "vitest"
+    },
+    "devDependencies": {
+        "jsdom": "^27.0.0",
+        "vite": "^7.3.0",
+        "vitest": "^4.0.0"
+    }
+}

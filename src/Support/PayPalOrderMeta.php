@@ -142,6 +142,119 @@ final class PayPalOrderMeta
     }
 
     /**
+     * Records that the order processed webhook event `$eventId`, keeping the
+     * latest `$limit` ids in `orders.meta.paypal.webhook_events`. Checked and
+     * written under the order's row lock.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order   $order    Order.
+     * @param  string  $eventId  Event id.
+     * @param  int     $limit    How many ids to keep.
+     *
+     * @return bool False when the order had already processed it.
+     */
+    public static function rememberEvent( Order $order, string $eventId, int $limit = 50 ): bool
+    {
+        $remember = static function ( array $meta ) use ( $eventId, $limit ): ?array {
+            $paypal = is_array( $meta[ self::KEY ] ?? null ) ? $meta[ self::KEY ] : [];
+            $seen   = array_values( array_filter( (array) ( $paypal['webhook_events'] ?? [] ), 'is_string' ) );
+
+            if ( in_array( $eventId, $seen, true ) ) {
+                return null;
+            }
+
+            $seen[]                   = $eventId;
+            $paypal['webhook_events'] = array_slice( $seen, -max( 1, $limit ) );
+            $meta[ self::KEY ]        = $paypal;
+
+            return $meta;
+        };
+
+        if ( ! $order->exists || null === $order->getKey() ) {
+            $meta = $remember( (array) ( $order->getAttribute( 'meta' ) ?? [] ) );
+
+            if ( null !== $meta ) {
+                $order->setAttribute( 'meta', $meta );
+            }
+
+            return null !== $meta;
+        }
+
+        $meta = DB::transaction( static function () use ( $order, $remember ): ?array {
+            $locked = Order::query()->lockForUpdate()->find( $order->getKey() );
+            $meta   = null === $locked ? null : $remember( (array) ( $locked->getAttribute( 'meta' ) ?? [] ) );
+
+            if ( null === $meta ) {
+                return null;
+            }
+
+            $locked->meta = $meta;
+            $locked->save();
+
+            return $meta;
+        } );
+
+        if ( null === $meta ) {
+            return false;
+        }
+
+        $order->setAttribute( 'meta', $meta );
+        $order->syncOriginalAttribute( 'meta' );
+
+        return true;
+    }
+
+    /**
+     * Forgets that the order processed webhook event `$eventId`, so it is
+     * processed again on retry.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order   $order    Order.
+     * @param  string  $eventId  Event id.
+     *
+     * @return void
+     */
+    public static function forgetEvent( Order $order, string $eventId ): void
+    {
+        $forget = static function ( array $meta ) use ( $eventId ): array {
+            $paypal                   = is_array( $meta[ self::KEY ] ?? null ) ? $meta[ self::KEY ] : [];
+            $paypal['webhook_events'] = array_values( array_filter(
+                (array) ( $paypal['webhook_events'] ?? [] ),
+                static fn ( mixed $seen ): bool => $seen !== $eventId,
+            ) );
+            $meta[ self::KEY ] = $paypal;
+
+            return $meta;
+        };
+
+        if ( ! $order->exists || null === $order->getKey() ) {
+            $order->setAttribute( 'meta', $forget( (array) ( $order->getAttribute( 'meta' ) ?? [] ) ) );
+
+            return;
+        }
+
+        $meta = DB::transaction( static function () use ( $order, $forget ): ?array {
+            $locked = Order::query()->lockForUpdate()->find( $order->getKey() );
+
+            if ( null === $locked ) {
+                return null;
+            }
+
+            $locked->meta = $forget( (array) ( $locked->getAttribute( 'meta' ) ?? [] ) );
+            $locked->save();
+
+            return $locked->meta;
+        } );
+
+        if ( null !== $meta ) {
+            $order->setAttribute( 'meta', $meta );
+            $order->syncOriginalAttribute( 'meta' );
+        }
+    }
+
+    /**
      * `$meta` with `$values` merged into its PayPal namespace.
      *
      * @since 1.0.0

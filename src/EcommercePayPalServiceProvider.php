@@ -20,6 +20,7 @@ use ArtisanPackUI\Ecommerce\Registries\PaymentGatewayRegistry;
 use ArtisanPackUI\Ecommerce\Registries\SatelliteRegistry;
 use ArtisanPackUI\Ecommerce\Registries\SettingsRegistry;
 use ArtisanPackUI\Ecommerce\Settings\SettingsRepository;
+use ArtisanPackUI\Ecommerce\ValueObjects\WebhookResult;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalClient;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalCredentials;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalTokenProvider;
@@ -32,13 +33,21 @@ use ArtisanPackUI\EcommercePayPal\Gateways\PayPalCardGateway;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalGateway;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalGooglePayGateway;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalWalletGateway;
+use ArtisanPackUI\EcommercePayPal\Jobs\ProcessPayPalWebhook;
+use ArtisanPackUI\EcommercePayPal\Livewire\PayLaterMessage as PayLaterMessageComponent;
+use ArtisanPackUI\EcommercePayPal\Livewire\Payment\PayPalButtons;
 use ArtisanPackUI\EcommercePayPal\Payloads\OrderPayloadBuilder;
 use ArtisanPackUI\EcommercePayPal\Satellite\PayPalUninstaller;
 use ArtisanPackUI\EcommercePayPal\Settings\PayPalSettings;
+use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalOrderLocator;
+use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalWebhookProcessor;
+use ArtisanPackUI\EcommerceStorefrontLivewire\Registries\PaymentDriverRegistry;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\ServiceProvider;
+use Livewire\Livewire;
 
 /**
  * Bootstraps the PayPal gateway satellite.
@@ -140,6 +149,7 @@ class EcommercePayPalServiceProvider extends ServiceProvider
         ) );
 
         $this->app->singleton( OrderPayloadBuilder::class );
+        $this->app->singleton( PayPalOrderLocator::class );
     }
 
     /**
@@ -165,6 +175,7 @@ class EcommercePayPalServiceProvider extends ServiceProvider
         // to config, which decides whether the gateways register.
         $this->registerSettings();
         $this->registerGateways();
+        $this->registerStorefrontDrivers();
     }
 
     /**
@@ -278,7 +289,8 @@ class EcommercePayPalServiceProvider extends ServiceProvider
     }
 
     /**
-     * Loads the package views under the `ecommerce-paypal` namespace.
+     * Loads the package views and Blade components under the
+     * `ecommerce-paypal` namespace.
      *
      * @since 1.0.0
      *
@@ -287,6 +299,9 @@ class EcommercePayPalServiceProvider extends ServiceProvider
     protected function registerViews(): void
     {
         $this->loadViewsFrom( dirname( __DIR__ ) . '/resources/views', self::VIEW_NAMESPACE );
+
+        // `<x-ecommerce-paypal::pay-later-message />` (spec §9.7).
+        Blade::componentNamespace( 'ArtisanPackUI\\EcommercePayPal\\View\\Components', self::VIEW_NAMESPACE );
     }
 
     /**
@@ -364,7 +379,44 @@ class EcommercePayPalServiceProvider extends ServiceProvider
     }
 
     /**
-     * Registers the four gateways and the per-cart availability filter.
+     * Registers the Livewire components: the live Pay Later message when
+     * Livewire is installed (spec §9.7), and the payment drivers with
+     * storefront-livewire's `PaymentDriverRegistry` when that package is
+     * installed (spec §9.2).
+     *
+     * A driver the registry already holds is left alone, so a host's
+     * `payments.drivers` config wins whichever provider boots first (the
+     * storefront applies its config after its own drivers).
+     *
+     * @since 1.0.0
+     *
+     * @return void
+     */
+    protected function registerStorefrontDrivers(): void
+    {
+        if ( ! class_exists( Livewire::class ) ) {
+            return;
+        }
+
+        // The live Pay Later message only needs Livewire.
+        Livewire::component( PayLaterMessageComponent::COMPONENT, PayLaterMessageComponent::class );
+
+        if ( ! class_exists( PaymentDriverRegistry::class ) ) {
+            return;
+        }
+
+        Livewire::component( PayPalButtons::COMPONENT, PayPalButtons::class );
+
+        $registry = $this->app->make( PaymentDriverRegistry::class );
+
+        if ( ! $registry->has( PayPalButtons::DRIVER ) ) {
+            $registry->register( PayPalButtons::DRIVER, PayPalButtons::COMPONENT );
+        }
+    }
+
+    /**
+     * Registers the four gateways, the webhook event processor, and the
+     * per-cart availability filter.
      *
      * Every gateway in the family is registered while the package is
      * active, even a method that is switched off, so orders placed through
@@ -386,6 +438,14 @@ class EcommercePayPalServiceProvider extends ServiceProvider
         foreach ( self::GATEWAYS as $gateway ) {
             $registry->register( $gateway::KEY, $gateway );
         }
+
+        // Notes, refunds, and disputes from PayPal's events. The engine fires
+        // this action only for verified deliveries it hasn't seen before.
+        addAction( 'ap.ecommerce.gateway.' . PayPalWalletGateway::KEY . '.webhook_received', static function ( mixed $result ): void {
+            if ( $result instanceof WebhookResult && $result->verified && PayPalWebhookProcessor::handles( $result->eventType ) ) {
+                ProcessPayPalWebhook::dispatch( PayPalWebhookProcessor::minimal( $result->payload ) );
+            }
+        } );
 
         addFilter( 'ap.ecommerce.payment.availableGateways', static function ( mixed $gateways, mixed $cart = null ): mixed {
             if ( ! is_array( $gateways ) || ! $cart instanceof Cart ) {

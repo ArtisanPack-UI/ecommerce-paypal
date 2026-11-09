@@ -4,13 +4,18 @@ declare( strict_types=1 );
 
 namespace Tests;
 
+use ArtisanPack\LivewireUiComponents\LivewireUiComponentsServiceProvider;
 use ArtisanPackUI\Core\CoreServiceProvider;
 use ArtisanPackUI\Ecommerce\Providers\EcommerceServiceProvider;
 use ArtisanPackUI\EcommercePayPal\EcommercePayPalServiceProvider;
+use ArtisanPackUI\EcommerceStorefrontLivewire\EcommerceStorefrontLivewireServiceProvider;
 use ArtisanPackUI\Hooks\Providers\HooksServiceProvider;
 use ArtisanPackUI\Security\SecurityServiceProvider;
+use BladeUI\Heroicons\BladeHeroiconsServiceProvider;
+use BladeUI\Icons\BladeIconsServiceProvider;
 use Laravel\Sanctum\SanctumServiceProvider;
 use Laravel\Scout\ScoutServiceProvider;
+use Livewire\LivewireServiceProvider;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 use Rebing\GraphQL\GraphQLServiceProvider;
 
@@ -40,6 +45,18 @@ abstract class TestCase extends BaseTestCase
             ? [ GraphQLServiceProvider::class ]
             : [];
 
+        // storefront-livewire is a dev dependency (the Livewire drivers);
+        // it's booted when installed, as in a host app.
+        $storefront = class_exists( EcommerceStorefrontLivewireServiceProvider::class )
+            ? [
+                LivewireServiceProvider::class,
+                BladeIconsServiceProvider::class,
+                BladeHeroiconsServiceProvider::class,
+                LivewireUiComponentsServiceProvider::class,
+                EcommerceStorefrontLivewireServiceProvider::class,
+            ]
+            : [];
+
         return [
             CoreServiceProvider::class,
             HooksServiceProvider::class,
@@ -48,6 +65,7 @@ abstract class TestCase extends BaseTestCase
             ScoutServiceProvider::class,
             ...$graphQl,
             EcommerceServiceProvider::class,
+            ...$storefront,
             EcommercePayPalServiceProvider::class,
         ];
     }
