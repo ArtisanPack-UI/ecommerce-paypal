@@ -241,6 +241,11 @@ final class PayPalRedactor
             return true;
         }
 
+        if ( 'id' === $key && 'vault' === $parent ) {
+            // A saved-payment token id in an Order's payment source.
+            return true;
+        }
+
         if ( 'value' === $key && 'details' === $parent ) {
             // Error details echo the rejected input, which may be card data.
             return true;

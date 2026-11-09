@@ -79,3 +79,15 @@ it( 'masks token ids in paths', function ( string $path, string $expected ): voi
     'list'          => [ '/v3/vault/payment-tokens', '/v3/vault/payment-tokens' ],
     'order'         => [ '/v2/checkout/orders/ORDER-1', '/v2/checkout/orders/ORDER-1' ],
 ] );
+
+it( 'masks the vault id in an order payment source', function (): void {
+    $redacted = PayPalRedactor::redact( [
+        'id'             => 'ORDER-1',
+        'payment_source' => [ 'card' => [ 'attributes' => [ 'vault' => [ 'id' => 'TOKEN-1', 'status' => 'VAULTED', 'customer' => [ 'id' => 'customer_1' ] ] ] ] ],
+    ] );
+
+    expect( $redacted['payment_source']['card']['attributes']['vault']['id'] )->toBe( PayPalRedactor::MASK )
+        ->and( $redacted['payment_source']['card']['attributes']['vault']['status'] )->toBe( 'VAULTED' )
+        ->and( $redacted['payment_source']['card']['attributes']['vault']['customer']['id'] )->toBe( 'customer_1' )
+        ->and( $redacted['id'] )->toBe( 'ORDER-1' );
+} );
