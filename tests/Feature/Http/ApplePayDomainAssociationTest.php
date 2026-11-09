@@ -75,6 +75,24 @@ it( 'fetches the file from an HTTPS URL and caches it', function (): void {
     Http::assertSentCount( 1 );
 } );
 
+it( 'remembers a failed fetch for a minute instead of calling the URL on every request', function (): void {
+    Http::fake( [ 'https://files.example/association' => Http::sequence()
+        ->push( 'Server error', 500 )
+        ->push( '7B227073704964223A2230313233343536373839414243444546', 200 ) ] );
+    appleDomainAssociation( 'https://files.example/association' );
+
+    $this->get( ApplePayDomainAssociation::PATH )->assertNotFound();
+    $this->get( ApplePayDomainAssociation::PATH )->assertNotFound();
+
+    Http::assertSentCount( 1 );
+
+    $this->travel( ApplePayDomainAssociation::FAILURE_CACHE_SECONDS + 1 )->seconds();
+
+    $this->get( ApplePayDomainAssociation::PATH )->assertOk();
+
+    Http::assertSentCount( 2 );
+} );
+
 it( 'answers 404 when nothing usable is configured', function ( Closure $arrange ): void {
     $arrange( $this );
 

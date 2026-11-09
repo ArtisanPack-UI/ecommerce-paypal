@@ -73,6 +73,16 @@ class ApplePayDomainAssociation
     public const CACHE_SECONDS = 3600;
 
     /**
+     * How long a failed fetch is remembered, in seconds, so the public
+     * route doesn't call a down or wrong URL on every request.
+     *
+     * @since 1.0.0
+     *
+     * @var int
+     */
+    public const FAILURE_CACHE_SECONDS = 60;
+
+    /**
      * Creates the resolver.
      *
      * @since 1.0.0
@@ -209,7 +219,8 @@ class ApplePayDomainAssociation
     }
 
     /**
-     * Fetches the file from `$url`, caching a successful answer.
+     * Fetches the file from `$url`, caching a successful answer for an hour
+     * and a failure for a minute.
      *
      * @since 1.0.0
      *
@@ -226,15 +237,21 @@ class ApplePayDomainAssociation
             return $cached;
         }
 
-        try {
-            $response = $this->http->timeout( 5 )->connectTimeout( 3 )->withoutRedirecting()->get( $url );
-        } catch ( Throwable ) {
+        if ( Cache::has( $key . ':failed' ) ) {
             return null;
         }
 
-        $body = trim( $response->body() );
+        try {
+            $response = $this->http->timeout( 5 )->connectTimeout( 3 )->withoutRedirecting()->get( $url );
+            $body     = trim( $response->body() );
+            $usable   = $response->successful() && self::isAssociation( $body );
+        } catch ( Throwable ) {
+            $usable = false;
+        }
 
-        if ( ! $response->successful() || ! self::isAssociation( $body ) ) {
+        if ( ! $usable ) {
+            Cache::put( $key . ':failed', true, self::FAILURE_CACHE_SECONDS );
+
             return null;
         }
 

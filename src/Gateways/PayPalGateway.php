@@ -45,6 +45,7 @@ use InvalidArgumentException;
 use Money\Currency;
 use Money\Money;
 use RuntimeException;
+use Throwable;
 use UnexpectedValueException;
 
 /**
@@ -1343,7 +1344,13 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
         PayPalOrderMeta::merge( $order, self::filled( $values ), $paypalOrder->id() );
 
         if ( null !== $paypalOrder->vault() ) {
-            app( PayPalVault::class )->recordFromOrder( $order, $paypalOrder, $this->key() );
+            try {
+                app( PayPalVault::class )->recordFromOrder( $order, $paypalOrder, $this->key() );
+            } catch ( Throwable $exception ) {
+                // The money has moved; failing to save the method must not
+                // turn the capture into a failure.
+                report( $exception );
+            }
         }
     }
 

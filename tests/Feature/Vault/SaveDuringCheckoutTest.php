@@ -18,6 +18,7 @@ use ArtisanPackUI\EcommercePayPal\Vault\PayPalVault;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Sleep;
 use Livewire\Features\SupportTesting\Testable;
 use Livewire\Livewire;
@@ -245,6 +246,28 @@ describe( 'capture', function (): void {
             'type'            => 'card',
             'display'         => [ 'brand' => 'VISA', 'last_digits' => '1111', 'expiry' => '2030-12' ],
         ] );
+    } );
+
+    it( 'still succeeds when the vaulted method can\'t be saved', function (): void {
+        Exceptions::fake();
+
+        $customer = Customer::factory()->create();
+
+        // PayPal's customer id is already linked to another customer, so the
+        // save breaks a unique index.
+        PayPalCustomer::factory()->create( [ 'paypal_customer_id' => 'PAYPAL-CUS' ] );
+
+        $this->paypal->respond( 'orders.capture', Orders::body( 'orders/captured', [
+            'payment_source.paypal.attributes.vault' => [ 'id' => 'tok-paypal', 'status' => 'VAULTED', 'customer' => [ 'id' => 'PAYPAL-CUS' ] ],
+        ] ) );
+
+        $result = vaultGateway( 'paypal' )->capturePayment( Orders::create( [ 'customer_id' => $customer->id ] ), Orders::session() );
+
+        expect( $result->success )->toBeTrue()
+            ->and( $result->gatewayReference )->toBe( Orders::CAPTURE_ID )
+            ->and( PayPalPaymentToken::query()->count() )->toBe( 0 );
+
+        Exceptions::assertReported( Illuminate\Database\UniqueConstraintViolationException::class );
     } );
 
     it( 'stores nothing for a guest order or when PayPal is still vaulting', function ( array $vault, bool $guest ): void {
