@@ -94,7 +94,7 @@
     "PayPal dispute :id opened: :reason, :amount. Respond by :date. Resolution Center: :url": "Litige PayPal :id ouvert : :reason, :amount. Répondez avant le :date. Centre de résolution : :url",
     "PayPal dispute :id updated: :status (:reason, :amount). Resolution Center: :url": "Litige PayPal :id mis à jour : :status (:reason, :amount). Centre de résolution : :url",
     "PayPal dispute :id updated: :status (:reason, :amount). Respond by :date. Resolution Center: :url": "Litige PayPal :id mis à jour : :status (:reason, :amount). Répondez avant le :date. Centre de résolution : :url",
-    "PayPal dispute :id was resolved :outcome. Resolution Center: :url": "Le litige PayPal :id a été résolu :outcome. Centre de résolution : :url",
+    "PayPal dispute :id was resolved. Outcome: :outcome. Resolution Center: :url": "Le litige PayPal :id a été résolu. Résultat : :outcome. Centre de résolution : :url",
     "PayPal does not allow a refund on this payment.": "PayPal n'autorise pas de remboursement sur ce paiement.",
     "PayPal does not support :currency for this method": "PayPal ne prend pas en charge :currency pour ce moyen",
     "PayPal has no record of the payment being refunded.": "PayPal n'a aucune trace du paiement à rembourser.",

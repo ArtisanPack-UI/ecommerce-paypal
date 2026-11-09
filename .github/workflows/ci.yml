@@ -213,4 +213,10 @@ jobs:
         run: npm run build
 
       - name: Check dist/ is up to date
-        run: git diff --exit-code -- dist/ || (echo "dist/ is out of date. Run npm run build and commit it." && exit 1)
+        # --porcelain also catches new, untracked build output.
+        run: |
+          if [ -n "$(git status --porcelain -- dist/)" ]; then
+            git status --porcelain -- dist/
+            echo "dist/ is out of date. Run npm run build and commit it."
+            exit 1
+          fi

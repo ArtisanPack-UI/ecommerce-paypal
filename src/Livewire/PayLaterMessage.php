@@ -15,8 +15,8 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\EcommercePayPal\Livewire;
 
-use ArtisanPackUI\EcommercePayPal\Livewire\Payment\PayPalButtons;
 use ArtisanPackUI\EcommercePayPal\Support\PayLaterMessaging;
+use ArtisanPackUI\EcommercePayPal\Support\PayPalCheckoutModule;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalMoney;
 use ArtisanPackUI\EcommerceStorefrontLivewire\Support\StorefrontCart;
 use Illuminate\Contracts\View\View;
@@ -135,7 +135,7 @@ class PayLaterMessage extends Component
         // script that mounted it keeps a live node when the total drops to
         // zero and comes back; an empty value only hides it.
         return view( 'ecommerce-paypal::livewire.pay-later-message', [
-            'module'   => PayPalButtons::moduleUrl(),
+            'module'   => PayPalCheckoutModule::url(),
             'settings' => null !== $money && PayLaterMessaging::placementEnabled( $this->placement, $money->getCurrency()->getCode() )
                 ? PayLaterMessaging::settings( $this->placement, $money )
                 : null,

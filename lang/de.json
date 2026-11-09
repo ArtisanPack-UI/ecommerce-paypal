@@ -94,7 +94,7 @@
     "PayPal dispute :id opened: :reason, :amount. Respond by :date. Resolution Center: :url": "PayPal-Konflikt :id eröffnet: :reason, :amount. Antworten Sie bis :date. Konfliktlösungszentrum: :url",
     "PayPal dispute :id updated: :status (:reason, :amount). Resolution Center: :url": "PayPal-Konflikt :id aktualisiert: :status (:reason, :amount). Konfliktlösungszentrum: :url",
     "PayPal dispute :id updated: :status (:reason, :amount). Respond by :date. Resolution Center: :url": "PayPal-Konflikt :id aktualisiert: :status (:reason, :amount). Antworten Sie bis :date. Konfliktlösungszentrum: :url",
-    "PayPal dispute :id was resolved :outcome. Resolution Center: :url": "Der PayPal-Konflikt :id wurde gelöst: :outcome. Konfliktlösungszentrum: :url",
+    "PayPal dispute :id was resolved. Outcome: :outcome. Resolution Center: :url": "Der PayPal-Konflikt :id wurde gelöst. Ergebnis: :outcome. Konfliktlösungszentrum: :url",
     "PayPal does not allow a refund on this payment.": "PayPal erlaubt für diese Zahlung keine Rückerstattung.",
     "PayPal does not support :currency for this method": "PayPal unterstützt :currency für diese Methode nicht",
     "PayPal has no record of the payment being refunded.": "PayPal hat keinen Eintrag zu der Zahlung, die erstattet werden soll.",

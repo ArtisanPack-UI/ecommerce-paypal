@@ -15,8 +15,8 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\EcommercePayPal\View\Components;
 
-use ArtisanPackUI\EcommercePayPal\Livewire\Payment\PayPalButtons;
 use ArtisanPackUI\EcommercePayPal\Support\PayLaterMessaging;
+use ArtisanPackUI\EcommercePayPal\Support\PayPalCheckoutModule;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Str;
 use Illuminate\View\Component;
@@ -95,7 +95,7 @@ class PayLaterMessage extends Component
 
         return view( 'ecommerce-paypal::components.pay-later-message', [
             'id'       => 'ec-paypal-message-' . Str::lower( Str::random( 10 ) ),
-            'module'   => PayPalButtons::moduleUrl(),
+            'module'   => PayPalCheckoutModule::url(),
             'settings' => PayLaterMessaging::settings( $this->placement, $money ),
         ] );
     }

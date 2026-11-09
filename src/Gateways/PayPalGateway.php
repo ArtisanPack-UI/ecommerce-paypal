@@ -1506,6 +1506,8 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
      */
     protected static function filled( array $values ): array
     {
-        return array_filter( $values, static fn ( mixed $value ): bool => null !== $value && '' !== $value && [] !== $value );
+        return array_filter( $values, static function ( mixed $value ): bool {
+            return null !== $value && '' !== $value && [] !== $value;
+        } );
     }
 }

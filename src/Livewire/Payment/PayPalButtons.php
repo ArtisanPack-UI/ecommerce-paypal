@@ -15,7 +15,7 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\EcommercePayPal\Livewire\Payment;
 
-use ArtisanPackUI\EcommercePayPal\EcommercePayPalServiceProvider;
+use ArtisanPackUI\EcommercePayPal\Support\PayPalCheckoutModule;
 use ArtisanPackUI\EcommerceStorefrontLivewire\Livewire\Payment\PaymentDriver;
 use Illuminate\Contracts\View\View;
 
@@ -139,8 +139,8 @@ class PayPalButtons extends PaymentDriver
     }
 
     /**
-     * Where the published `paypal-checkout.js` is served from, with the
-     * package version as a cache buster.
+     * Where the published `paypal-checkout.js` is served from
+     * ({@see PayPalCheckoutModule::url()}).
      *
      * @since 1.0.0
      *
@@ -148,6 +148,6 @@ class PayPalButtons extends PaymentDriver
      */
     public static function moduleUrl(): string
     {
-        return asset( 'vendor/' . EcommercePayPalServiceProvider::VIEW_NAMESPACE . '/paypal-checkout.js' ) . '?v=' . rawurlencode( EcommercePayPalServiceProvider::VERSION );
+        return PayPalCheckoutModule::url();
     }
 }

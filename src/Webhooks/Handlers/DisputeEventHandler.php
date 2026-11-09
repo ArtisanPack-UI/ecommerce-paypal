@@ -283,7 +283,7 @@ class DisputeEventHandler extends WebhookEventHandler
         ], static fn ( ?string $value ): bool => null !== $value );
 
         if ( 'resolved' === $event ) {
-            return __( 'PayPal dispute :id was resolved :outcome. Resolution Center: :url', $values );
+            return __( 'PayPal dispute :id was resolved. Outcome: :outcome. Resolution Center: :url', $values );
         }
 
         if ( 'created' === $event ) {

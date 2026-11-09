@@ -104,6 +104,40 @@ describe( 'livewire component', function (): void {
             ->assertSeeHtml( 'hidden' );
     } );
 
+    it( 'mounts the message when the shopper\'s first cart is created after the component rendered', function (): void {
+        $component = Livewire::test( PayLaterMessage::class, [ 'placement' => 'cart' ] )
+            ->assertSet( 'value', '' )
+            ->assertDontSeeHtml( 'data-paypal-settings=' );
+
+        $script = implode( "\n", (array) ( $component->effects['scripts'] ?? [] ) );
+
+        // The script is always registered and finds the box when it appears.
+        expect( $script )->toContain( "root.querySelector( '[data-paypal-pay-later-message]' )" )
+            ->toContain( 'target.dataset.paypalSettings' );
+
+        $cart = Cart::factory()->create( [ 'currency' => 'USD', 'total_amount' => 6000 ] );
+        app( StorefrontCart::class )->remember( $cart );
+
+        $component->dispatch( 'ecommerce-cart-updated' )
+            ->assertSet( 'value', '60.00' )
+            ->assertSeeHtml( 'data-paypal-pay-later-message' )
+            ->assertSeeHtml( 'data-paypal-settings=' )
+            ->assertDontSeeHtml( ' hidden' );
+    } );
+
+    it( 'loads without storefront-livewire', function (): void {
+        // The Pay Later components may not reference the storefront's driver
+        // classes: those extend a class only storefront-livewire provides.
+        foreach ( [ 'src/Livewire/PayLaterMessage.php', 'src/View/Components/PayLaterMessage.php', 'src/Support/PayLaterMessaging.php', 'src/Support/PayPalCheckoutModule.php' ] as $file ) {
+            $source = (string) file_get_contents( dirname( __DIR__, 3 ) . '/' . $file );
+
+            expect( $source )->not->toContain( 'PayPalButtons' )
+                ->not->toContain( 'Livewire\\Payment\\' );
+        }
+
+        expect( (string) file_get_contents( dirname( __DIR__, 3 ) . '/src/Livewire/PayLaterMessage.php' ) )->toContain( 'class_exists( StorefrontCart::class )' );
+    } );
+
     it( 'keeps the box for an empty cart, hidden, so the message can come back', function (): void {
         $cart = Cart::factory()->create( [ 'currency' => 'USD', 'total_amount' => 0 ] );
         app( StorefrontCart::class )->remember( $cart );
@@ -119,7 +153,7 @@ describe( 'livewire component', function (): void {
         Livewire::test( PayLaterMessage::class, [ 'placement' => 'cart' ] )
             ->assertSet( 'value', '' )
             ->assertSeeHtml( 'data-paypal-pay-later-live' )
-            ->assertDontSeeHtml( 'data-paypal-pay-later-message' );
+            ->assertDontSeeHtml( 'data-paypal-settings=' );
     } );
 
     it( 'is registered under its spec name', function (): void {

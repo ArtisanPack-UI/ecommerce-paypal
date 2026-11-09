@@ -100,7 +100,7 @@ it( 'notes the outcome of a resolved dispute', function (): void {
 
     postPayPalDispute( $this, 'CUSTOMER.DISPUTE.RESOLVED' )->assertOk();
 
-    expect( OrderNote::query()->sole()->body )->toBe( 'PayPal dispute PP-D-27803 was resolved in your favor. Resolution Center: https://www.sandbox.paypal.com/resolutioncenter/view/PP-D-27803' )
+    expect( OrderNote::query()->sole()->body )->toBe( 'PayPal dispute PP-D-27803 was resolved. Outcome: in your favor. Resolution Center: https://www.sandbox.paypal.com/resolutioncenter/view/PP-D-27803' )
         ->and( PayPalOrderMeta::get( $this->order->fresh(), 'disputes.' . PAYPAL_DISPUTE_ID . '.outcome' ) )->toBe( 'RESOLVED_SELLER_FAVOUR' );
 } );
 

@@ -1,8 +1,11 @@
 {{--
     Live PayPal Pay Later message. See Livewire\PayLaterMessage.
 
-    The message is mounted once inside `wire:ignore` and updated in place
-    when the amount changes. The box keeps a line's height while it loads.
+    The box is rendered whenever messages may show here; an empty value
+    only hides it. The script looks the box (and its settings) up on every
+    change, so a box that first appears after mount, when the shopper's
+    first cart is created, is mounted too. Once mounted, the message is
+    updated in place. The box keeps a line's height while it loads.
 
     @package    ArtisanPack_UI
     @subpackage EcommercePayPal
@@ -11,40 +14,55 @@
 --}}
 <div data-paypal-pay-later-live>
     @if ( null !== $settings )
-        <div wire:ignore class="min-h-6" @if ( '' === $value ) hidden @endif data-paypal-pay-later-message data-placement="{{ $settings['placement'] }}"></div>
+        <div
+            wire:ignore
+            class="min-h-6"
+            @if ( '' === $value ) hidden @endif
+            data-paypal-pay-later-message
+            data-placement="{{ $settings['placement'] }}"
+            data-paypal-settings="{{ json_encode( $settings['config'] ) }}"
+        ></div>
     @endif
 </div>
 
-@if ( null !== $settings )
-    @script
-    <script>
-        const settings = @js( $settings );
-        const target   = $wire.$el.querySelector( '[data-paypal-pay-later-message]' );
+@script
+<script>
+    const root   = $wire.$el;
+    const module = @js( $module );
 
-        // An empty value (the cart emptied) hides the box; the message is
-        // mounted on the first amount and updated in place after that.
-        let message = null;
+    let message = null;
+    let mounted = null;
 
-        const show = async ( amount ) => {
-            target.hidden = ! amount;
+    const show = async ( amount ) => {
+        const target = root.querySelector( '[data-paypal-pay-later-message]' );
 
-            if ( ! amount ) {
-                return;
-            }
+        if ( ! target ) {
+            return;
+        }
 
-            if ( message ) {
-                await message.update( amount );
+        target.hidden = ! amount;
 
-                return;
-            }
+        if ( ! amount ) {
+            return;
+        }
 
-            const paypal = await import( @js( $module ) );
+        if ( message && mounted === target ) {
+            await message.update( amount );
 
-            message = await paypal.mountMessages( target, settings.config, { amount, placement: settings.placement } );
-        };
+            return;
+        }
 
-        $wire.$watch( 'value', ( amount ) => show( amount ).catch( () => {} ) );
-        show( $wire.value ).catch( () => {} );
-    </script>
-    @endscript
-@endif
+        const paypal = await import( module );
+
+        mounted = target;
+        message = await paypal.mountMessages( target, JSON.parse( target.dataset.paypalSettings ), {
+            amount,
+            placement: target.dataset.placement,
+        } );
+    };
+
+    // Runs after Livewire has morphed the new render into the page.
+    $wire.$watch( 'value', ( amount ) => window.requestAnimationFrame( () => show( amount ).catch( () => {} ) ) );
+    show( $wire.value ).catch( () => {} );
+</script>
+@endscript
