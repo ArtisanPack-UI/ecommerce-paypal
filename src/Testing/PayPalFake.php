@@ -23,6 +23,7 @@ use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
 use PHPUnit\Framework\Assert as PHPUnit;
 use RuntimeException;
+use WeakReference;
 
 /**
  * Stands in for PayPal's REST API through `Http::fake()`.
@@ -121,6 +122,24 @@ final class PayPalFake
     ];
 
     /**
+     * The fake that answers PayPal requests: the one created last.
+     *
+     * @since 1.0.0
+     *
+     * @var self|null
+     */
+    private static ?self $active = null;
+
+    /**
+     * The HTTP factory the dispatching stub is registered on.
+     *
+     * @since 1.0.0
+     *
+     * @var WeakReference<object>|null
+     */
+    private static ?WeakReference $factory = null;
+
+    /**
      * Queued responses by endpoint key.
      *
      * @since 1.0.0
@@ -147,9 +166,19 @@ final class PayPalFake
      */
     public static function fake(): self
     {
-        $fake = new self();
+        $fake    = new self();
+        $factory = Http::getFacadeRoot();
 
-        Http::fake( static fn ( Request $request ): ?PromiseInterface => $fake->handle( $request ) );
+        self::$active = $fake;
+
+        // One stub per HTTP factory, dispatching to the newest fake: Laravel
+        // runs stubs in registration order, so a second `Http::fake()` would
+        // never be reached, and clearing the stubs would drop unrelated ones.
+        if ( self::$factory?->get() !== $factory ) {
+            self::$factory = WeakReference::create( $factory );
+
+            Http::fake( static fn ( Request $request ): ?PromiseInterface => self::$active?->handle( $request ) );
+        }
 
         return $fake;
     }

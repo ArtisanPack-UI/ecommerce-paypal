@@ -82,7 +82,7 @@ class RegisterWebhookCommand extends Command
             $existing = $this->existing( $client, $url );
             $webhook  = null === $existing
                 ? $client->webhooks()->create( $url, PayPalWebhookEvents::SUBSCRIBED, (string) Str::uuid() )
-                : $client->webhooks()->update( $existing->id(), PayPalWebhookEvents::SUBSCRIBED, (string) Str::uuid() );
+                : $client->webhooks()->update( $existing->id(), PayPalWebhookEvents::SUBSCRIBED, (string) Str::uuid(), $existing->url() === $url ? null : $url );
         } catch ( PayPalApiException $exception ) {
             $this->components->error( __( 'PayPal refused the webhook: :message', [ 'message' => $exception->getMessage() ] ) );
 

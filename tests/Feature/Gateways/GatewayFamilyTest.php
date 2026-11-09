@@ -141,6 +141,13 @@ describe( 'availability', function (): void {
         expect( $registry->availableFor( CartBuilder::make( [ [ 'Gift', 0, 1 ] ] ) ) )->toBe( [] );
     } );
 
+    it( 'hides every method when the total rounds to nothing in PayPal units', function (): void {
+        $registry = bootPayPal( [ 'methods.paypal.enabled' => true, 'methods.card.enabled' => true ] );
+
+        expect( $registry->availableFor( CartBuilder::make( [ [ 'Sticker', 40, 1 ] ], [ 'currency' => 'HUF' ] ) ) )->toBe( [] )
+            ->and( array_keys( $registry->availableFor( CartBuilder::make( [ [ 'Sticker', 50, 1 ] ], [ 'currency' => 'HUF' ] ) ) ) )->toBe( [ 'paypal', 'paypal-card' ] );
+    } );
+
     it( 'leaves other gateways alone', function (): void {
         $registry = bootPayPal();
         $other    = Mockery::mock( PaymentGateway::class );
@@ -203,6 +210,31 @@ describe( 'status mapping', function (): void {
         $order['purchase_units'][0]['payments']['captures'][0]['status'] = 'PENDING';
 
         expect( app( PayPalWalletGateway::class )->sessionStatus( PayPalOrder::fromArray( $order ) ) )->toBe( PaymentSession::STATUS_PROCESSING );
+    } );
+
+    it( 'uses the newest settled capture, not the last one listed', function (): void {
+        $order = PayPalFake::fixture( 'orders/captured' );
+
+        $order['purchase_units'][0]['payments']['captures'] = [
+            [ 'id' => 'NEWER', 'status' => 'COMPLETED', 'create_time' => '2026-11-09T12:05:00Z' ],
+            [ 'id' => 'OLDER', 'status' => 'PENDING', 'create_time' => '2026-11-09T12:00:00Z' ],
+        ];
+
+        $paypalOrder = PayPalOrder::fromArray( $order );
+
+        expect( $paypalOrder->latestCapture()?->id() )->toBe( 'NEWER' )
+            ->and( app( PayPalWalletGateway::class )->sessionStatus( $paypalOrder ) )->toBe( PaymentSession::STATUS_SUCCEEDED );
+    } );
+
+    it( 'falls back to the newest capture when none is settled', function (): void {
+        $order = PayPalFake::fixture( 'orders/captured' );
+
+        $order['purchase_units'][0]['payments']['captures'] = [
+            [ 'id' => 'NEWER', 'status' => 'PENDING', 'create_time' => '2026-11-09T12:05:00Z' ],
+            [ 'id' => 'OLDER', 'status' => 'DECLINED', 'create_time' => '2026-11-09T12:00:00Z' ],
+        ];
+
+        expect( PayPalOrder::fromArray( $order )->latestCapture()?->id() )->toBe( 'NEWER' );
     } );
 } );
 

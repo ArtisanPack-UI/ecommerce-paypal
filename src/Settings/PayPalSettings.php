@@ -180,10 +180,11 @@ final class PayPalSettings
      * The `paypal` constraint, run on the combined settings before every
      * write:
      *
-     * - `paypal-live-credentials-invalid` — live mode, but PayPal refuses a
-     *   live token for the credentials (checked against PayPal; a result is
-     *   cached for 10 minutes, and a check that can't reach PayPal doesn't
-     *   block the write);
+     * - `paypal-live-credentials-invalid` — PayPal is enabled in live mode,
+     *   but PayPal refuses a live token for the credentials (checked against
+     *   PayPal; a result is cached for 10 minutes, and a check that can't
+     *   reach PayPal doesn't block the write). Disabling PayPal is never
+     *   blocked by this check;
      * - `paypal-not-configured` — PayPal is enabled without a client id and
      *   secret;
      * - `paypal-vault-unavailable` — saved payment methods are on, but
@@ -204,7 +205,7 @@ final class PayPalSettings
             $errors = [];
 
             $enabled     = (bool) $value( 'enabled' );
-            $mode        = (string) $value( 'mode' );
+            $mode        = strtolower( trim( (string) $value( 'mode' ) ) );
             $credentials = new PayPalCredentials(
                 trim( (string) $value( 'client_id' ) ),
                 trim( (string) config( self::CONFIG_PREFIX . 'client_secret', '' ) ),
@@ -219,7 +220,7 @@ final class PayPalSettings
                 ];
             }
 
-            if ( PayPalEnvironment::LIVE === $mode && $credentials->isComplete() && false === self::liveCredentialsWork( $credentials ) ) {
+            if ( $enabled && PayPalEnvironment::LIVE === $mode && $credentials->isComplete() && false === self::liveCredentialsWork( $credentials ) ) {
                 $errors[] = [
                     'field'   => self::key( 'mode' ),
                     'code'    => 'paypal-live-credentials-invalid',

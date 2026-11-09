@@ -88,6 +88,17 @@ describe( 'environment', function (): void {
         $this->paypal->assertSent( 'orders.get', fn ( Request $request ): bool => str_starts_with( $request->url(), 'https://api-m.paypal.com/' ) );
     } );
 
+    it( 'never serializes the secret', function (): void {
+        $credentials = new PayPalCredentials( 'client-id', 'super-secret-value', PayPalEnvironment::live() );
+        $serialized  = serialize( $credentials );
+        $restored    = unserialize( $serialized );
+
+        expect( $serialized )->not->toContain( 'super-secret-value' )
+            ->and( $restored->clientId )->toBe( 'client-id' )
+            ->and( $restored->environment->mode )->toBe( PayPalEnvironment::LIVE )
+            ->and( $restored->isComplete() )->toBeFalse();
+    } );
+
     it( 'never exposes the secret in debug output', function (): void {
         $credentials = PayPalCredentials::fromConfig();
 
@@ -151,6 +162,19 @@ describe( 'tokens', function (): void {
         $this->paypal->assertSentCount( 'orders.get', 2 );
     } );
 
+    it( 'logs the rejected token with its debug id before refreshing', function (): void {
+        $this->paypal->respond( 'orders.get', [ 'name' => 'AUTHENTICATION_FAILURE' ], 401, [ 'PayPal-Debug-Id' => 'dbg-401' ] );
+
+        $this->client->orders()->get( 'A' );
+
+        $records = paypalLogRecords();
+
+        expect( $records )->toHaveCount( 1 )
+            ->and( $records[0]->message )->toBe( 'PayPal rejected the access token; fetching a new one.' )
+            ->and( $records[0]->context['status'] )->toBe( 401 )
+            ->and( $records[0]->context['debug_id'] )->toBe( 'dbg-401' );
+    } );
+
     it( 'gives up after a second 401', function (): void {
         $this->paypal->error( 'orders.get', 'unauthorized', times: 2 );
 
@@ -185,6 +209,23 @@ describe( 'tokens', function (): void {
         $this->paypal->error( 'oauth.token', 'internal-server-error' );
 
         expect( fn () => $provider->verify( PayPalCredentials::fromConfig() ) )->toThrow( PayPalApiException::class );
+    } );
+
+    it( 'only treats an authentication failure as refused credentials', function (): void {
+        $this->paypal->respond( 'oauth.token', [ 'error' => 'unsupported_grant_type', 'error_description' => 'Grant type is not supported.' ], 400 );
+
+        $provider = app( PayPalTokenProvider::class );
+
+        expect( fn () => $provider->verify( PayPalCredentials::fromConfig() ) )->toThrow( PayPalApiException::class );
+    } );
+
+    it( 'retries a failed id token request', function (): void {
+        $this->paypal->respond( 'oauth.token', PayPalFake::fixture( 'errors/internal-server-error' ), 503 );
+        $this->paypal->respond( 'oauth.token', [ 'access_token' => 'A21', 'token_type' => 'Bearer', 'expires_in' => 3600, 'id_token' => 'id-token-value' ] );
+
+        expect( $this->client->idToken() )->toBe( 'id-token-value' );
+
+        Sleep::assertSleptTimes( 1 );
     } );
 
     it( 'mints an id token, optionally for a customer', function (): void {
@@ -256,12 +297,64 @@ describe( 'idempotency and retries', function (): void {
         Sleep::assertNeverSlept();
     } )->with( [ 'instrument-declined', 'invalid-request', 'resource-not-found' ] );
 
-    it( 'backs off exponentially and honors Retry-After', function (): void {
+    it( 'honors Retry-After', function (): void {
         $this->paypal->respond( 'orders.get', PayPalFake::fixture( 'errors/rate-limit' ), 429, [ 'Retry-After' => '3' ] );
 
         $this->client->orders()->get( 'A' );
 
         Sleep::assertSlept( fn ( $duration ): bool => $duration->totalMilliseconds >= 3000, 1 );
+    } );
+
+    it( 'honors a Retry-After date', function (): void {
+        $this->freezeSecond();
+
+        $this->paypal->respond( 'orders.get', PayPalFake::fixture( 'errors/rate-limit' ), 429, [ 'Retry-After' => now()->addSeconds( 5 )->toRfc7231String() ] );
+
+        $this->client->orders()->get( 'A' );
+
+        Sleep::assertSlept( fn ( $duration ): bool => $duration->totalMilliseconds >= 5000, 1 );
+    } );
+
+    it( 'gives up instead of waiting out a long Retry-After', function (): void {
+        $this->paypal->respond( 'orders.get', PayPalFake::fixture( 'errors/rate-limit' ), 429, [ 'Retry-After' => '120' ] );
+
+        try {
+            $this->client->orders()->get( 'A' );
+            $this->fail( 'Expected an exception.' );
+        } catch ( PayPalApiException $exception ) {
+            expect( $exception->status )->toBe( 429 )
+                ->and( $exception->retryAfter )->toBe( '120' );
+        }
+
+        $this->paypal->assertSentCount( 'orders.get', 1 );
+        Sleep::assertNeverSlept();
+    } );
+
+    it( 'backs off exponentially with jitter without Retry-After', function (): void {
+        config( [ 'artisanpack.ecommerce-paypal.http.retries' => 3 ] );
+
+        $this->paypal->error( 'orders.get', 'internal-server-error', times: 3 );
+
+        $this->client->orders()->get( 'A' );
+
+        $slept = [];
+
+        Sleep::assertSlept( function ( $duration ) use ( &$slept ): bool {
+            $slept[] = $duration->totalMilliseconds;
+
+            return true;
+        }, 3 );
+
+        $base = PayPalClient::BACKOFF_BASE_MS;
+
+        expect( $slept[0] )->toBeGreaterThanOrEqual( $base / 2 )->toBeLessThanOrEqual( $base )
+            ->and( $slept[2] )->toBeGreaterThanOrEqual( $base * 2 )->toBeLessThanOrEqual( $base * 4 );
+    } );
+
+    it( 'sends an empty body as a JSON object', function (): void {
+        $this->client->orders()->capture( 'ORDER-1', 'capture-42' );
+
+        $this->paypal->assertSent( 'orders.capture', fn ( Request $request ): bool => '{}' === $request->body() );
     } );
 } );
 
@@ -307,6 +400,8 @@ describe( 'errors', function (): void {
 
         config( [ 'artisanpack.ecommerce-paypal.logging.debug' => true ] );
 
+        $this->paypal->respond( 'orders.create', [ 'id' => 'ORDER-1', 'status' => 'CREATED', 'payer' => [ 'email_address' => 'payer-response@example.com' ] ] );
+
         $this->client->orders()->create( [ 'payer' => [ 'email_address' => 'buyer@example.com' ] ], 'create-1' );
 
         $records = paypalLogRecords();
@@ -315,6 +410,8 @@ describe( 'errors', function (): void {
         expect( $records )->toHaveCount( 2 )
             ->and( $records[0]->context['headers']['PayPal-Request-Id'] )->toBe( 'create-1' )
             ->and( $records[0]->context['body']['payer']['email_address'] )->toBe( PayPalRedactor::MASK )
+            ->and( $records[1]->context['body']['payer']['email_address'] )->toBe( PayPalRedactor::MASK )
+            ->and( $logged )->not->toContain( 'payer-response@example.com' )
             ->and( $logged )->not->toContain( 'buyer@example.com' )
             ->and( $logged )->not->toContain( 'A21AAFakeAccessTokenForTests' )
             ->and( $logged )->not->toContain( 'client-secret' );
@@ -417,7 +514,7 @@ describe( 'typed endpoints', function (): void {
             ->and( $list->totalPages() )->toBe( 1 )
             ->and( $list->tokens()[1]->sourceType() )->toBe( 'paypal' );
 
-        $this->paypal->assertSent( 'vault.payment_tokens.list', fn ( Request $request ): bool => str_contains( $request->url(), 'page_size=20' ) && str_contains( $request->url(), 'customer_id=customer_4029352050' ) );
+        $this->paypal->assertSent( 'vault.payment_tokens.list', fn ( Request $request ): bool => str_contains( $request->url(), 'page_size=5' ) && str_contains( $request->url(), 'total_required=true' ) && str_contains( $request->url(), 'customer_id=customer_4029352050' ) );
 
         $token = $vault->getPaymentToken( '8kk8451t' );
 
@@ -481,8 +578,39 @@ describe( 'typed endpoints', function (): void {
             ->and( $events->nextUrl() )->toBeNull();
     } );
 
+    it( 'masks saved-payment token ids in debug logs', function (): void {
+        config( [ 'artisanpack.ecommerce-paypal.logging.debug' => true ] );
+
+        $token = $this->client->vault()->getPaymentToken( 'TOKEN-SECRET-ID' );
+
+        $logged = json_encode( array_map( fn ( LogRecord $record ): array => $record->context, paypalLogRecords() ), JSON_UNESCAPED_SLASHES );
+
+        expect( $logged )->not->toContain( 'TOKEN-SECRET-ID' )
+            ->and( $logged )->not->toContain( $token->id() )
+            ->and( $logged )->toContain( '/v3/vault/payment-tokens/' . PayPalRedactor::MASK );
+    } );
+
+    it( 'rejects a webhook response without an id or URL', function ( string $endpoint, Closure $call ): void {
+        $this->paypal->respond( $endpoint, [ 'unexpected' => true ] );
+
+        expect( fn () => $call( $this->client ) )->toThrow( PayPalApiException::class, 'PayPal returned a webhook without an id or URL.' );
+    } )->with( [
+        'create' => [ 'webhooks.create', fn ( PayPalClient $client ) => $client->webhooks()->create( 'https://shop.test/hook', [ 'PAYMENT.CAPTURE.COMPLETED' ], 'wh-1' ) ],
+        'get'    => [ 'webhooks.get', fn ( PayPalClient $client ) => $client->webhooks()->get( 'WH-1' ) ],
+    ] );
+
+    it( 'lets a newer fake take over PayPal responses', function (): void {
+        $newer = PayPalFake::fake();
+        $newer->respond( 'orders.get', [ 'id' => 'FROM-NEWER', 'status' => 'APPROVED' ] );
+
+        expect( $this->client->orders()->get( 'A' )->id() )->toBe( 'FROM-NEWER' );
+
+        $newer->assertSentCount( 'orders.get', 1 );
+        $this->paypal->assertNotSent( 'orders.get' );
+    } );
+
     it( 'answers unknown PayPal paths with a 404', function (): void {
         expect( fn () => $this->client->get( '/v9/nothing' ) )
-            ->toThrow( fn ( PayPalApiException $exception ) => expect( $exception->status )->toBe( 404 ) );
+            ->toThrow( fn ( PayPalApiException $exception) => expect( $exception->status )->toBe( 404 ) );
     } );
 } );

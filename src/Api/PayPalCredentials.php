@@ -48,6 +48,39 @@ final class PayPalCredentials
     }
 
     /**
+     * Serializes without the secret, so queued jobs, cache entries, and
+     * session payloads never carry it. An unserialized copy is incomplete
+     * and has to be rebuilt with {@see self::fromConfig()}.
+     *
+     * @since 1.0.0
+     *
+     * @return array{clientId: string, environment: PayPalEnvironment}
+     */
+    public function __serialize(): array
+    {
+        return [
+            'clientId'    => $this->clientId,
+            'environment' => $this->environment,
+        ];
+    }
+
+    /**
+     * Restores a serialized copy, without a secret.
+     *
+     * @since 1.0.0
+     *
+     * @param  array{clientId?: string, environment?: PayPalEnvironment}  $data  Serialized data.
+     *
+     * @return void
+     */
+    public function __unserialize( array $data ): void
+    {
+        $this->clientId     = (string) ( $data['clientId'] ?? '' );
+        $this->clientSecret = '';
+        $this->environment  = $data['environment'] ?? PayPalEnvironment::sandbox();
+    }
+
+    /**
      * Hides the secret from debug output.
      *
      * @since 1.0.0

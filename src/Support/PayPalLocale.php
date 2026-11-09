@@ -84,7 +84,20 @@ final class PayPalLocale
 
         $parts    = explode( '-', $locale );
         $language = strtolower( $parts[0] );
-        $region   = isset( $parts[1] ) ? strtoupper( $parts[1] ) : null;
+        $region   = null;
+
+        // A script subtag (`Hant` in `zh-Hant-TW`) sits before the region.
+        foreach ( array_slice( $parts, 1 ) as $subtag ) {
+            if ( 1 === preg_match( '/^([A-Za-z]{2}|\d{3})$/', $subtag ) ) {
+                $region = strtoupper( $subtag );
+
+                break;
+            }
+
+            if ( 1 !== preg_match( '/^[A-Za-z]{4}$/', $subtag ) ) {
+                break;
+            }
+        }
 
         if ( null !== $region && in_array( $language . '-' . $region, self::SUPPORTED, true ) ) {
             return $language . '-' . $region;

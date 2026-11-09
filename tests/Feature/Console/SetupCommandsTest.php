@@ -6,9 +6,48 @@ use ArtisanPackUI\EcommercePayPal\Console\Commands\InstallCommand;
 use ArtisanPackUI\EcommercePayPal\Testing\PayPalFake;
 use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalWebhookEvents;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Sleep;
+
+/**
+ * The webhook events spec §8.2 subscribes to, listed independently of
+ * PayPalWebhookEvents so a change there has to be deliberate.
+ */
+const SPEC_WEBHOOK_EVENTS = [
+    'CHECKOUT.ORDER.APPROVED',
+    'PAYMENT.CAPTURE.COMPLETED',
+    'PAYMENT.CAPTURE.PENDING',
+    'PAYMENT.CAPTURE.DENIED',
+    'PAYMENT.CAPTURE.DECLINED',
+    'PAYMENT.CAPTURE.REFUNDED',
+    'PAYMENT.CAPTURE.REVERSED',
+    'PAYMENT.AUTHORIZATION.CREATED',
+    'PAYMENT.AUTHORIZATION.VOIDED',
+    'CUSTOMER.DISPUTE.CREATED',
+    'CUSTOMER.DISPUTE.UPDATED',
+    'CUSTOMER.DISPUTE.RESOLVED',
+    'VAULT.PAYMENT-TOKEN.CREATED',
+    'VAULT.PAYMENT-TOKEN.DELETED',
+];
+
+/**
+ * A webhook body delivering to this app with every subscribed event.
+ *
+ * @param  array<string, mixed>  $overrides  Fields to replace.
+ *
+ * @return array<string, mixed>
+ */
+function matchingWebhook( array $overrides = [] ): array
+{
+    return [
+        'id'          => '0EH40505U7160970P',
+        'url'         => 'https://shop.test/ecommerce/webhooks/paypal',
+        'event_types' => array_map( static fn ( string $name ): array => [ 'name' => $name ], SPEC_WEBHOOK_EVENTS ),
+        ...$overrides,
+    ];
+}
 
 beforeEach( function (): void {
     config( [
@@ -65,6 +104,14 @@ describe( 'install', function (): void {
         expect( File::get( config_path( InstallCommand::CONFIG_FILE ) ) )->not->toContain( 'custom' );
     } );
 
+    it( 'stops with the failing status when the migrations fail', function (): void {
+        Artisan::command( 'migrate {--force}', fn (): int => 1 );
+
+        $this->artisan( 'ecommerce-paypal:install', [ '--migrate' => true, '--no-interaction' => true ] )
+            ->doesntExpectOutputToContain( 'Next steps:' )
+            ->assertFailed();
+    } );
+
     it( 'publishes and runs the migrations on request', function (): void {
         $this->artisan( 'ecommerce-paypal:install', [ '--migrate' => true, '--no-interaction' => true ] )
             ->doesntExpectOutputToContain( 'Skipped the migrations' )
@@ -78,6 +125,8 @@ describe( 'verify-credentials', function (): void {
     } );
 
     it( 'passes when everything checks out', function (): void {
+        $this->paypal->respond( 'webhooks.get', matchingWebhook() );
+
         $this->artisan( 'ecommerce-paypal:verify-credentials' )
             ->expectsOutputToContain( 'Sandbox' )
             ->expectsOutputToContain( 'Access token' )
@@ -141,10 +190,11 @@ describe( 'verify-credentials', function (): void {
         $this->paypal->assertSentCount( 'webhooks.get', 2 );
     } );
 
-    it( 'checks the Apple Pay domain file when Apple Pay is on', function ( int $status, string $body, bool $passes ): void {
+    it( 'checks the Apple Pay domain file when Apple Pay is on', function ( int $status, string $body, bool $passes, array $headers = [] ): void {
         config( [ 'artisanpack.ecommerce-paypal.methods.apple_pay.enabled' => true ] );
+        $this->paypal->respond( 'webhooks.get', matchingWebhook() );
 
-        Http::fake( [ 'https://shop.test/.well-known/apple-developer-merchantid-domain-association' => Http::response( $body, $status ) ] );
+        Http::fake( [ 'https://shop.test/.well-known/apple-developer-merchantid-domain-association' => Http::response( $body, $status, $headers ) ] );
 
         $command = $this->artisan( 'ecommerce-paypal:verify-credentials' );
 
@@ -152,10 +202,58 @@ describe( 'verify-credentials', function (): void {
             ? $command->expectsOutputToContain( 'PayPal is set up correctly.' )->assertSuccessful()
             : $command->expectsOutputToContain( 'is not reachable' )->assertFailed();
     } )->with( [
-        'served'  => [ 200, 'apple-association-file', true ],
-        'missing' => [ 404, '', false ],
-        'empty'   => [ 200, '', false ],
+        'served'    => [ 200, '7B2270737044223A2232303139303631373135313134353934383431222C2276657273696F6E223A317D', true, [ 'Content-Type' => 'application/octet-stream' ] ],
+        'missing'   => [ 404, '', false ],
+        'empty'     => [ 200, '', false ],
+        'HTML page' => [ 200, '<!doctype html><html><body>Not found</body></html>', false, [ 'Content-Type' => 'text/html; charset=UTF-8' ] ],
+        'redirect'  => [ 302, '', false, [ 'Location' => 'https://shop.test/' ] ],
     ] );
+
+    it( 'checks the Apple Pay domain file at the origin root and against the configured contents', function (): void {
+        config( [
+            'app.url'                                                           => 'https://shop.test/store',
+            'artisanpack.ecommerce-paypal.methods.apple_pay.enabled'            => true,
+            'artisanpack.ecommerce-paypal.methods.apple_pay.domain_association' => 'expected-association',
+        ] );
+        url()->forceRootUrl( 'https://shop.test/store' );
+        $this->paypal->respond( 'webhooks.get', matchingWebhook() );
+
+        Http::fake( [ 'https://shop.test/.well-known/apple-developer-merchantid-domain-association' => Http::response( 'some-other-association', 200 ) ] );
+
+        $this->artisan( 'ecommerce-paypal:verify-credentials' )
+            ->expectsOutputToContain( 'https://shop.test/.well-known/apple-developer-merchantid-domain-association is not reachable' )
+            ->assertFailed();
+    } );
+
+    it( 'fails when the webhook delivers somewhere else', function (): void {
+        $this->paypal->respond( 'webhooks.get', matchingWebhook( [ 'url' => 'https://other-store.test/ecommerce/webhooks/paypal' ] ) );
+
+        $this->artisan( 'ecommerce-paypal:verify-credentials' )
+            ->expectsOutputToContain( 'delivers to https://other-store.test/ecommerce/webhooks/paypal' )
+            ->assertFailed();
+    } );
+
+    it( 'accepts a webhook that delivers to an explicit --url', function (): void {
+        $this->paypal->respond( 'webhooks.get', matchingWebhook( [ 'url' => 'https://proxy.test/paypal' ] ) );
+
+        $this->artisan( 'ecommerce-paypal:verify-credentials', [ '--url' => 'https://proxy.test/paypal' ] )
+            ->expectsOutputToContain( 'PayPal is set up correctly.' )
+            ->assertSuccessful();
+    } );
+
+    it( 'fails when the webhook is missing subscribed events', function (): void {
+        $this->paypal->respond( 'webhooks.get', matchingWebhook( [ 'event_types' => [ [ 'name' => 'PAYMENT.CAPTURE.COMPLETED' ] ] ] ) );
+
+        $this->artisan( 'ecommerce-paypal:verify-credentials' )
+            ->expectsOutputToContain( 'is missing events: CHECKOUT.ORDER.APPROVED' )
+            ->assertFailed();
+    } );
+
+    it( 'treats a wildcard subscription as covering every event', function (): void {
+        $this->paypal->respond( 'webhooks.get', matchingWebhook( [ 'event_types' => [ [ 'name' => '*' ] ] ] ) );
+
+        $this->artisan( 'ecommerce-paypal:verify-credentials' )->assertSuccessful();
+    } );
 } );
 
 describe( 'webhooks:register', function (): void {
@@ -168,7 +266,7 @@ describe( 'webhooks:register', function (): void {
             ->assertSuccessful();
 
         $this->paypal->assertSent( 'webhooks.create', fn ( Request $request ): bool => 'https://shop.test/ecommerce/webhooks/paypal' === $request['url']
-            && PayPalWebhookEvents::SUBSCRIBED === array_column( $request['event_types'], 'name' )
+            && SPEC_WEBHOOK_EVENTS === array_column( $request['event_types'], 'name' )
             && $request->hasHeader( 'PayPal-Request-Id' ) );
         $this->paypal->assertNotSent( 'webhooks.update' );
     } );
@@ -181,7 +279,8 @@ describe( 'webhooks:register', function (): void {
             ->assertSuccessful();
 
         $this->paypal->assertSent( 'webhooks.update', fn ( Request $request ): bool => str_ends_with( $request->url(), '/WH-EXISTING' )
-            && PayPalWebhookEvents::SUBSCRIBED === array_column( $request->data()[0]['value'], 'name' ) );
+            && SPEC_WEBHOOK_EVENTS === array_column( $request->data()[0]['value'], 'name' )
+            && 'https://shop.test/ecommerce/webhooks/paypal' === ( $request->data()[1]['value'] ?? null ) );
         $this->paypal->assertNotSent( 'webhooks.create' );
     } );
 

@@ -17,7 +17,9 @@ namespace ArtisanPackUI\EcommercePayPal\Console\Commands;
 
 use ArtisanPackUI\EcommercePayPal\Api\PayPalClient;
 use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalApiException;
+use ArtisanPackUI\EcommercePayPal\Gateways\PayPalWalletGateway;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalCurrencies;
+use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalWebhookEvents;
 use Illuminate\Console\Command;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Throwable;
@@ -58,7 +60,8 @@ class VerifyCredentialsCommand extends Command
     /**
      * @var string
      */
-    protected $signature = 'ecommerce-paypal:verify-credentials';
+    protected $signature = 'ecommerce-paypal:verify-credentials
+        {--url= : The webhook URL PayPal should deliver to, when it is not the webhook route of this app (a proxy, say).}';
 
     /**
      * @var string
@@ -221,8 +224,50 @@ class VerifyCredentialsCommand extends Command
                 continue;
             }
 
+            $expected = $this->expectedWebhookUrl();
+
+            if ( rtrim( $webhook->url(), '/' ) !== rtrim( $expected, '/' ) ) {
+                $this->result(
+                    __( 'Webhook :id', [ 'id' => $id ] ),
+                    false,
+                    __( 'delivers to :url instead of :expected', [ 'url' => $webhook->url(), 'expected' => $expected ] ),
+                );
+
+                continue;
+            }
+
+            $missing = in_array( '*', $webhook->eventTypes(), true )
+                ? []
+                : array_values( array_diff( PayPalWebhookEvents::SUBSCRIBED, $webhook->eventTypes() ) );
+
+            if ( [] !== $missing ) {
+                $this->result(
+                    __( 'Webhook :id', [ 'id' => $id ] ),
+                    false,
+                    __( 'is missing events: :events; run ecommerce-paypal:webhooks:register', [ 'events' => implode( ', ', $missing ) ] ),
+                );
+
+                continue;
+            }
+
             $this->result( __( 'Webhook :id', [ 'id' => $id ] ), true, $webhook->url() );
         }
+    }
+
+    /**
+     * The URL the webhook should deliver to: `--url`, or the PayPal route.
+     *
+     * @since 1.0.0
+     *
+     * @return string
+     */
+    protected function expectedWebhookUrl(): string
+    {
+        $option = $this->option( 'url' );
+
+        return is_string( $option ) && '' !== trim( $option )
+            ? trim( $option )
+            : route( 'ecommerce.webhooks', [ 'provider' => PayPalWalletGateway::KEY ] );
     }
 
     /**
@@ -243,16 +288,62 @@ class VerifyCredentialsCommand extends Command
             return;
         }
 
-        $url = url( self::APPLE_PAY_DOMAIN_PATH );
+        $url = $this->origin() . self::APPLE_PAY_DOMAIN_PATH;
 
         try {
-            $response  = $http->timeout( 10 )->get( $url );
-            $reachable = $response->successful() && '' !== trim( $response->body() );
+            // Apple doesn't follow redirects, so neither does the check.
+            $response  = $http->timeout( 10 )->withoutRedirecting()->get( $url );
+            $reachable = $response->successful() && $this->isDomainAssociation( $response->body(), (string) $response->header( 'Content-Type' ) );
         } catch ( Throwable ) {
             $reachable = false;
         }
 
         $this->result( __( 'Apple Pay domain file' ), $reachable, $reachable ? $url : __( ':url is not reachable', [ 'url' => $url ] ) );
+    }
+
+    /**
+     * The app's origin (scheme, host, and port), without any APP_URL path:
+     * Apple looks for the file at the domain root.
+     *
+     * @since 1.0.0
+     *
+     * @return string
+     */
+    protected function origin(): string
+    {
+        $parts = parse_url( url( '/' ) );
+        $port  = isset( $parts['port'] ) ? ':' . $parts['port'] : '';
+
+        return ( $parts['scheme'] ?? 'https' ) . '://' . ( $parts['host'] ?? 'localhost' ) . $port;
+    }
+
+    /**
+     * Whether a served body is the domain association file: the configured
+     * contents when the setting holds them, otherwise any non-empty body
+     * that isn't an HTML page (a catch-all route or an error page).
+     *
+     * @since 1.0.0
+     *
+     * @param  string  $body         Served body.
+     * @param  string  $contentType  Served `Content-Type`.
+     *
+     * @return bool
+     */
+    protected function isDomainAssociation( string $body, string $contentType ): bool
+    {
+        $body = trim( $body );
+
+        if ( '' === $body || str_contains( strtolower( $contentType ), 'html' ) || str_starts_with( $body, '<' ) ) {
+            return false;
+        }
+
+        $configured = trim( (string) config( 'artisanpack.ecommerce-paypal.methods.apple_pay.domain_association', '' ) );
+        $isContents = '' !== $configured
+            && ! str_starts_with( strtolower( $configured ), 'https://' )
+            && ! str_starts_with( strtolower( $configured ), 'http://' )
+            && ! is_file( $configured );
+
+        return ! $isContents || $configured === $body;
     }
 
     /**

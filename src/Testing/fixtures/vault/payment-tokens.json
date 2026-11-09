@@ -25,6 +25,6 @@
     "total_items": 2,
     "total_pages": 1,
     "links": [
-        { "rel": "self", "href": "https://api-m.sandbox.paypal.com/v3/vault/payment-tokens?customer_id=customer_4029352050&page=1&page_size=20", "method": "GET" }
+        { "rel": "self", "href": "https://api-m.sandbox.paypal.com/v3/vault/payment-tokens?customer_id=customer_4029352050&page=1&page_size=5&total_required=true", "method": "GET" }
     ]
 }

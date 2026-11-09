@@ -22,14 +22,17 @@ use ArtisanPackUI\EcommercePayPal\Api\Resources\WebhooksApi;
 use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalApiException;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalEnvironment;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalRedactor;
+use DateTimeImmutable;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Sleep;
 use InvalidArgumentException;
 use Psr\Log\LoggerInterface;
+use stdClass;
 use Throwable;
 
 /**
@@ -219,7 +222,20 @@ class PayPalClient
      */
     public function idToken( ?string $targetCustomerId = null ): string
     {
-        return $this->tokens->idToken( $this->credentials(), $targetCustomerId );
+        $credentials = $this->credentials();
+        $attempt     = 0;
+
+        while ( true ) {
+            try {
+                return $this->tokens->idToken( $credentials, $targetCustomerId );
+            } catch ( PayPalApiException $failure ) {
+                $this->logFailure( 'POST', '/v1/oauth2/token', $failure, $attempt );
+
+                if ( ! $failure->isRetryable() || $attempt >= $this->retries() || ! $this->backoff( ++$attempt, $failure->retryAfter ) ) {
+                    throw $failure;
+                }
+            }
+        }
     }
 
     /**
@@ -350,7 +366,7 @@ class PayPalClient
 
         $credentials = $this->credentials();
         $url         = $credentials->environment->apiBase() . '/' . ltrim( $path, '/' );
-        $retries     = max( 0, (int) config( 'artisanpack.ecommerce-paypal.http.retries', 2 ) );
+        $retries     = $this->retries();
         $attempt     = 0;
         $refreshed   = false;
 
@@ -358,20 +374,14 @@ class PayPalClient
             $this->logRequest( $method, $path, $headers, $body );
 
             try {
-                $response = $this->pending( $credentials, $headers, $query )->send( $method, $url, null === $body ? [] : [ 'json' => $body ] );
+                $response = $this->pending( $credentials, $headers, $query )->send( $method, $url, $this->options( $method, $body ) );
             } catch ( ConnectionException|PayPalApiException $exception ) {
                 // Both the call and the token fetch before it can fail; only
                 // failures worth repeating are retried.
                 $failure = $exception instanceof PayPalApiException ? $exception : PayPalApiException::connectionFailed( $exception );
                 $this->logFailure( $method, $path, $failure, $attempt );
 
-                if ( ! $failure->isRetryable() ) {
-                    throw $failure;
-                }
-
-                if ( $attempt < $retries ) {
-                    $this->backoff( ++$attempt );
-
+                if ( $failure->isRetryable() && $attempt < $retries && $this->backoff( ++$attempt, $failure->retryAfter ) ) {
                     continue;
                 }
 
@@ -386,6 +396,15 @@ class PayPalClient
                 // The cached token was revoked or expired early: fetch a new
                 // one and replay once. This doesn't count as a retry.
                 $refreshed = true;
+
+                $this->logger()->warning( 'PayPal rejected the access token; fetching a new one.', [
+                    'method'   => $method,
+                    'path'     => PayPalRedactor::redactPath( $path ),
+                    'mode'     => $credentials->environment->mode,
+                    'status'   => $response->status(),
+                    'debug_id' => $response->header( 'PayPal-Debug-Id' ) ?: null,
+                ] );
+
                 $this->tokens->forget( $credentials );
 
                 continue;
@@ -395,12 +414,15 @@ class PayPalClient
                 return $decoded;
             }
 
-            $failure = PayPalApiException::fromResponse( $response->status(), $decoded, $response->header( 'PayPal-Debug-Id' ) ?: null );
+            $failure = PayPalApiException::fromResponse(
+                $response->status(),
+                $decoded,
+                $response->header( 'PayPal-Debug-Id' ) ?: null,
+                $response->header( 'Retry-After' ) ?: null,
+            );
             $this->logFailure( $method, $path, $failure, $attempt );
 
-            if ( $failure->isRetryable() && $attempt < $retries ) {
-                $this->backoff( ++$attempt, $response );
-
+            if ( $failure->isRetryable() && $attempt < $retries && $this->backoff( ++$attempt, $failure->retryAfter ) ) {
                 continue;
             }
 
@@ -436,28 +458,101 @@ class PayPalClient
     }
 
     /**
-     * Waits before retry number `$attempt`: exponential backoff with full
-     * jitter, at least the `Retry-After` PayPal asked for.
+     * The Guzzle options for a request body.
+     *
+     * An empty `POST` body goes out as `{}`: PayPal rejects `[]` on the
+     * capture, authorize, reauthorize, and refund calls that take an
+     * optional body.
      *
      * @since 1.0.0
      *
-     * @param  int            $attempt   Retry number, from 1.
-     * @param  Response|null  $response  The failed response, when there was one.
+     * @param  string                       $method  HTTP method.
+     * @param  array<array-key, mixed>|null  $body    JSON body, or null for none.
      *
-     * @return void
+     * @return array<string, mixed>
      */
-    protected function backoff( int $attempt, ?Response $response = null ): void
+    protected function options( string $method, ?array $body ): array
     {
-        $ceiling = min( self::BACKOFF_MAX_MS, self::BACKOFF_BASE_MS * ( 2 ** ( $attempt - 1 ) ) );
-        $delay   = random_int( intdiv( $ceiling, 2 ), $ceiling );
+        if ( null === $body ) {
+            return [];
+        }
 
-        $retryAfter = null === $response ? '' : trim( (string) $response->header( 'Retry-After' ) );
+        return [ 'json' => 'POST' === $method && [] === $body ? new stdClass() : $body ];
+    }
 
-        if ( '' !== $retryAfter && ctype_digit( $retryAfter ) ) {
-            $delay = max( $delay, min( self::BACKOFF_MAX_MS, (int) $retryAfter * 1000 ) );
+    /**
+     * How many times a failed call is retried.
+     *
+     * @since 1.0.0
+     *
+     * @return int
+     */
+    protected function retries(): int
+    {
+        return max( 0, (int) config( 'artisanpack.ecommerce-paypal.http.retries', 2 ) );
+    }
+
+    /**
+     * Waits before retry number `$attempt`: exponential backoff with full
+     * jitter, or the `Retry-After` PayPal asked for when that is longer.
+     *
+     * A `Retry-After` beyond {@see self::BACKOFF_MAX_MS} isn't waited out:
+     * the call gives up so a request isn't held open that long.
+     *
+     * @since 1.0.0
+     *
+     * @param  int          $attempt     Retry number, from 1.
+     * @param  string|null  $retryAfter  The `Retry-After` header, when PayPal sent one.
+     *
+     * @return bool Whether to retry.
+     */
+    protected function backoff( int $attempt, ?string $retryAfter = null ): bool
+    {
+        $ceiling   = min( self::BACKOFF_MAX_MS, self::BACKOFF_BASE_MS * ( 2 ** ( $attempt - 1 ) ) );
+        $delay     = random_int( intdiv( $ceiling, 2 ), $ceiling );
+        $requested = $this->retryAfterMs( $retryAfter );
+
+        if ( null !== $requested ) {
+            if ( $requested > self::BACKOFF_MAX_MS ) {
+                return false;
+            }
+
+            $delay = max( $delay, $requested );
         }
 
         Sleep::for( $delay )->milliseconds();
+
+        return true;
+    }
+
+    /**
+     * Parses `Retry-After` (delay seconds or an HTTP date) into milliseconds.
+     *
+     * @since 1.0.0
+     *
+     * @param  string|null  $retryAfter  Header value.
+     *
+     * @return int|null Null when absent or unparseable.
+     */
+    protected function retryAfterMs( ?string $retryAfter ): ?int
+    {
+        $retryAfter = trim( (string) $retryAfter );
+
+        if ( '' === $retryAfter ) {
+            return null;
+        }
+
+        if ( ctype_digit( $retryAfter ) ) {
+            return (int) $retryAfter * 1000;
+        }
+
+        $date = DateTimeImmutable::createFromFormat( DATE_RFC7231, $retryAfter );
+
+        if ( false === $date ) {
+            return null;
+        }
+
+        return max( 0, ( $date->getTimestamp() - Date::now()->getTimestamp() ) * 1000 );
     }
 
     /**
@@ -504,7 +599,7 @@ class PayPalClient
 
         $this->logger()->debug( 'PayPal API request.', [
             'method'  => $method,
-            'path'    => $path,
+            'path'    => PayPalRedactor::redactPath( $path ),
             'mode'    => $this->environment()->mode,
             'headers' => PayPalRedactor::redactHeaders( $headers ),
             'body'    => null === $body ? null : PayPalRedactor::redact( $body ),
@@ -531,10 +626,10 @@ class PayPalClient
 
         $this->logger()->debug( 'PayPal API response.', [
             'method'   => $method,
-            'path'     => $path,
+            'path'     => PayPalRedactor::redactPath( $path ),
             'status'   => $response->status(),
             'debug_id' => $response->header( 'PayPal-Debug-Id' ) ?: null,
-            'body'     => PayPalRedactor::redact( $decoded ),
+            'body'     => PayPalRedactor::isVaultPath( $path ) ? PayPalRedactor::redactVault( $decoded ) : PayPalRedactor::redact( $decoded ),
         ] );
     }
 
@@ -554,7 +649,7 @@ class PayPalClient
     {
         $this->logger()->warning( 'PayPal API call failed.', [
             'method'  => $method,
-            'path'    => $path,
+            'path'    => PayPalRedactor::redactPath( $path ),
             'mode'    => $this->environment()->mode,
             'attempt' => $attempt + 1,
             ...$exception->context(),

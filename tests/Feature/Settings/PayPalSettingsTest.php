@@ -143,7 +143,7 @@ it( 'refuses live mode with credentials PayPal refuses', function (): void {
 
     $this->paypal->error( 'oauth.token', 'invalid-client' );
 
-    expect( paypalSettingErrors( [ 'paypal.mode' => 'live', 'paypal.client_id' => 'sandbox-id' ] ) )->toBe( [ 'paypal-live-credentials-invalid' ] );
+    expect( paypalSettingErrors( [ 'paypal.enabled' => true, 'paypal.mode' => 'live', 'paypal.client_id' => 'sandbox-id' ] ) )->toBe( [ 'paypal-live-credentials-invalid' ] );
 
     $this->paypal->assertSent( 'oauth.token', fn ( $request ): bool => str_starts_with( $request->url(), 'https://api-m.paypal.com/' ) );
 } );
@@ -151,7 +151,7 @@ it( 'refuses live mode with credentials PayPal refuses', function (): void {
 it( 'accepts live mode with working live credentials', function (): void {
     config( [ 'artisanpack.ecommerce-paypal.client_secret' => 'live-secret' ] );
 
-    expect( paypalSettingErrors( [ 'paypal.mode' => 'live', 'paypal.client_id' => 'live-id' ] ) )->toBe( [] )
+    expect( paypalSettingErrors( [ 'paypal.enabled' => true, 'paypal.mode' => 'live', 'paypal.client_id' => 'live-id' ] ) )->toBe( [] )
         ->and( config( 'artisanpack.ecommerce-paypal.mode' ) )->toBe( 'live' );
 } );
 
@@ -160,8 +160,8 @@ it( 'caches the live credential check for 10 minutes', function (): void {
 
     $this->paypal->error( 'oauth.token', 'invalid-client' );
 
-    paypalSettingErrors( [ 'paypal.mode' => 'live', 'paypal.client_id' => 'sandbox-id' ] );
-    $second = paypalSettingErrors( [ 'paypal.mode' => 'live', 'paypal.client_id' => 'sandbox-id' ] );
+    paypalSettingErrors( [ 'paypal.enabled' => true, 'paypal.mode' => 'live', 'paypal.client_id' => 'sandbox-id' ] );
+    $second = paypalSettingErrors( [ 'paypal.enabled' => true, 'paypal.mode' => 'live', 'paypal.client_id' => 'sandbox-id' ] );
 
     expect( $second )->toBe( [ 'paypal-live-credentials-invalid' ] );
     $this->paypal->assertSentCount( 'oauth.token', 1 );
@@ -169,19 +169,42 @@ it( 'caches the live credential check for 10 minutes', function (): void {
     $this->travel( PayPalSettings::CREDENTIAL_CHECK_TTL + 1 )->seconds();
 
     // The default fixture now issues a token, so the credentials pass.
-    expect( paypalSettingErrors( [ 'paypal.mode' => 'live', 'paypal.client_id' => 'sandbox-id' ] ) )->toBe( [] );
+    expect( paypalSettingErrors( [ 'paypal.enabled' => true, 'paypal.mode' => 'live', 'paypal.client_id' => 'sandbox-id' ] ) )->toBe( [] );
     $this->paypal->assertSentCount( 'oauth.token', 2 );
+} );
+
+it( 'normalizes a configured mode before the live credential check', function (): void {
+    config( [ 'artisanpack.ecommerce-paypal.client_secret' => 'sandbox-secret', 'artisanpack.ecommerce-paypal.mode' => ' LIVE ' ] );
+
+    $this->paypal->error( 'oauth.token', 'invalid-client' );
+
+    expect( paypalSettingErrors( [ 'paypal.enabled' => true, 'paypal.client_id' => 'sandbox-id' ] ) )->toBe( [ 'paypal-live-credentials-invalid' ] );
+
+    $this->paypal->assertSent( 'oauth.token', fn ( $request ): bool => str_starts_with( $request->url(), 'https://api-m.paypal.com/' ) );
+} );
+
+it( 'lets PayPal be disabled even when the live credentials are refused', function (): void {
+    config( [ 'artisanpack.ecommerce-paypal.client_secret' => 'sandbox-secret', 'artisanpack.ecommerce-paypal.mode' => 'live' ] );
+
+    $this->paypal->error( 'oauth.token', 'invalid-client' );
+
+    expect( paypalSettingErrors( [ 'paypal.enabled' => false, 'paypal.client_id' => 'sandbox-id' ] ) )->toBe( [] );
+
+    $this->paypal->assertNotSent( 'oauth.token' );
 } );
 
 it( 'never caches the secret itself', function (): void {
     config( [ 'artisanpack.ecommerce-paypal.client_secret' => 'live-secret' ] );
 
-    paypalSettingErrors( [ 'paypal.mode' => 'live', 'paypal.client_id' => 'live-id' ] );
+    paypalSettingErrors( [ 'paypal.enabled' => true, 'paypal.mode' => 'live', 'paypal.client_id' => 'live-id' ] );
 
-    $store = Cache::getStore();
-    $keys  = array_keys( ( new ReflectionProperty( $store, 'storage' ) )->getValue( $store ) );
+    $store   = Cache::getStore();
+    $storage = ( new ReflectionProperty( $store, 'storage' ) )->getValue( $store );
+    $checks  = array_filter( array_keys( $storage ), static fn ( string $key ): bool => str_contains( $key, PayPalSettings::CREDENTIAL_CHECK_CACHE_PREFIX ) );
 
-    expect( implode( ',', $keys ) )->not->toContain( 'live-secret' );
+    expect( $checks )->toHaveCount( 1 )
+        ->and( implode( ',', array_keys( $storage ) ) )->not->toContain( 'live-secret' )
+        ->and( serialize( array_values( $storage ) ) )->not->toContain( 'live-secret' );
 } );
 
 it( 'does not block a write when PayPal cannot be reached', function (): void {
@@ -189,7 +212,7 @@ it( 'does not block a write when PayPal cannot be reached', function (): void {
 
     $this->paypal->timeout( 'oauth.token' );
 
-    expect( paypalSettingErrors( [ 'paypal.mode' => 'live', 'paypal.client_id' => 'live-id' ] ) )->toBe( [] );
+    expect( paypalSettingErrors( [ 'paypal.enabled' => true, 'paypal.mode' => 'live', 'paypal.client_id' => 'live-id' ] ) )->toBe( [] );
 } );
 
 it( 'refuses saved payment methods without PayPal or cards', function (): void {

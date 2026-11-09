@@ -57,7 +57,7 @@ final class WebhooksApi
      */
     public function create( string $url, array $eventTypes, string $requestId ): PayPalWebhook
     {
-        return PayPalWebhook::fromArray( $this->client->post( '/v1/notifications/webhooks', [
+        return self::webhook( $this->client->post( '/v1/notifications/webhooks', [
             'url'         => $url,
             'event_types' => self::eventTypes( $eventTypes ),
         ], $requestId ) );
@@ -95,7 +95,7 @@ final class WebhooksApi
      */
     public function get( string $webhookId ): PayPalWebhook
     {
-        return PayPalWebhook::fromArray( $this->client->get( '/v1/notifications/webhooks/' . rawurlencode( $webhookId ) ) );
+        return self::webhook( $this->client->get( '/v1/notifications/webhooks/' . rawurlencode( $webhookId ) ) );
     }
 
     /**
@@ -120,7 +120,7 @@ final class WebhooksApi
             $operations[] = [ 'op' => 'replace', 'path' => '/url', 'value' => $url ];
         }
 
-        return PayPalWebhook::fromArray( $this->client->patch( '/v1/notifications/webhooks/' . rawurlencode( $webhookId ), $operations, $requestId ) );
+        return self::webhook( $this->client->patch( '/v1/notifications/webhooks/' . rawurlencode( $webhookId ), $operations, $requestId ) );
     }
 
     /**
@@ -174,6 +174,28 @@ final class WebhooksApi
             'end_time'   => $endTime,
             'page_size'  => min( 300, max( 1, $pageSize ) ),
         ], static fn ( mixed $value ): bool => null !== $value ) ) );
+    }
+
+    /**
+     * A webhook from a successful response, which must name its id and URL.
+     *
+     * @since 1.0.0
+     *
+     * @param  array<string, mixed>  $body  Decoded response body.
+     *
+     * @throws PayPalApiException When the body isn't a webhook.
+     *
+     * @return PayPalWebhook
+     */
+    private static function webhook( array $body ): PayPalWebhook
+    {
+        $webhook = PayPalWebhook::fromArray( $body );
+
+        if ( '' === $webhook->id() || '' === $webhook->url() ) {
+            throw new PayPalApiException( 'PayPal returned a webhook without an id or URL.', 200, 'INVALID_WEBHOOK_RESPONSE' );
+        }
+
+        return $webhook;
     }
 
     /**

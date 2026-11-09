@@ -94,7 +94,7 @@ final class PayPalMoney
         $negative             = str_starts_with( $value, '-' );
         [ $whole, $fraction ] = array_pad( explode( '.', ltrim( $value, '-' ), 2 ), 2, '' );
 
-        if ( strlen( rtrim( $fraction, '0' ) ) > $subunit ) {
+        if ( strlen( rtrim( $fraction, '0' ) ) > self::decimals( $currency ) ) {
             throw new InvalidArgumentException( sprintf( 'The PayPal amount "%s" has more decimals than %s allows.', $value, $code ) );
         }
 

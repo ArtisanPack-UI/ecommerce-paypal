@@ -27,8 +27,10 @@ use ArtisanPackUI\EcommercePayPal\Api\Data\PayPalOrder;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalClient;
 use ArtisanPackUI\EcommercePayPal\Payloads\OrderPayloadBuilder;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalCurrencies;
+use ArtisanPackUI\EcommercePayPal\Support\PayPalMoney;
 use Illuminate\Http\Request;
 use LogicException;
+use Money\Currency;
 use Money\Money;
 
 /**
@@ -130,7 +132,8 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
     /**
      * Whether checkout should offer this gateway for `$cart` (spec §6.2):
      * the method is on, PayPal takes the cart's currency for it, and there
-     * is something to pay.
+     * is something to pay once the total is in PayPal's units (a HUF total
+     * under half a forint rounds to nothing).
      *
      * Device eligibility (Apple Pay, Google Pay) and buyer-country
      * eligibility (Venmo, Pay Later) are decided by the JS SDK.
@@ -148,7 +151,7 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
         return $this->isEnabled()
             && '' !== $currency
             && PayPalCurrencies::supports( $this->method(), $currency )
-            && (int) ( $cart->getAttribute( 'total_amount' ) ?? 0 ) > 0;
+            && PayPalMoney::toUnits( new Money( (int) ( $cart->getAttribute( 'total_amount' ) ?? 0 ), new Currency( $currency ) ) ) > 0;
     }
 
     /**

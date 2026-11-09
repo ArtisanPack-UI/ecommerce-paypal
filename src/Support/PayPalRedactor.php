@@ -61,6 +61,8 @@ final class PayPalRedactor
         'expiry',
         'brand',
         'bin',
+        // Saved payment methods.
+        'vault_id',
         // Payer personal data.
         'email_address',
         'email',
@@ -89,6 +91,15 @@ final class PayPalRedactor
      * @var array<int, string>
      */
     public const NAME_PARENTS = [ 'card', 'payer', 'shipping', 'apple_pay', 'google_pay', 'venmo', 'paypal' ];
+
+    /**
+     * Path segments followed by a saved-payment token id.
+     *
+     * @since 1.0.0
+     *
+     * @var array<int, string>
+     */
+    public const TOKEN_PATHS = [ 'payment-tokens', 'setup-tokens' ];
 
     /**
      * Header names masked in logged headers.
@@ -120,6 +131,12 @@ final class PayPalRedactor
                 continue;
             }
 
+            if ( 'href' === $normalized && is_string( $value ) ) {
+                $payload[ $key ] = self::redactPath( $value );
+
+                continue;
+            }
+
             if ( is_array( $value ) ) {
                 // List entries inherit their list's parent key.
                 $payload[ $key ] = self::redact( $value, $normalized ?? $parent );
@@ -127,6 +144,65 @@ final class PayPalRedactor
         }
 
         return $payload;
+    }
+
+    /**
+     * Masks a Vault response: the token ids (the top-level `id`, and each
+     * `payment_tokens[].id` of a list) as well as everything
+     * {@see self::redact()} masks.
+     *
+     * @since 1.0.0
+     *
+     * @param  array<array-key, mixed>  $payload  Decoded Vault response.
+     *
+     * @return array<array-key, mixed>
+     */
+    public static function redactVault( array $payload ): array
+    {
+        if ( isset( $payload['id'] ) ) {
+            $payload['id'] = self::MASK;
+        }
+
+        if ( isset( $payload['payment_tokens'] ) && is_array( $payload['payment_tokens'] ) ) {
+            foreach ( $payload['payment_tokens'] as $index => $token ) {
+                if ( is_array( $token ) && isset( $token['id'] ) ) {
+                    $payload['payment_tokens'][ $index ]['id'] = self::MASK;
+                }
+            }
+        }
+
+        return self::redact( $payload );
+    }
+
+    /**
+     * Masks the saved-payment token ids in an API path
+     * (`/v3/vault/payment-tokens/{id}` → `/v3/vault/payment-tokens/[redacted]`).
+     *
+     * @since 1.0.0
+     *
+     * @param  string  $path  API path or URL.
+     *
+     * @return string
+     */
+    public static function redactPath( string $path ): string
+    {
+        $pattern = '#/(' . implode( '|', array_map( static fn ( string $segment ): string => preg_quote( $segment, '#' ), self::TOKEN_PATHS ) ) . ')/[^/?\#]+#i';
+
+        return (string) preg_replace( $pattern, '/$1/' . self::MASK, $path );
+    }
+
+    /**
+     * Whether a path is a Vault token resource.
+     *
+     * @since 1.0.0
+     *
+     * @param  string  $path  API path.
+     *
+     * @return bool
+     */
+    public static function isVaultPath( string $path ): bool
+    {
+        return str_starts_with( '/' . ltrim( $path, '/' ), '/v3/vault/' );
     }
 
     /**
@@ -162,6 +238,11 @@ final class PayPalRedactor
     private static function isSensitive( string $key, ?string $parent ): bool
     {
         if ( in_array( $key, self::KEYS, true ) ) {
+            return true;
+        }
+
+        if ( 'value' === $key && 'details' === $parent ) {
+            // Error details echo the rejected input, which may be card data.
             return true;
         }
 

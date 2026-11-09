@@ -187,7 +187,7 @@ class PayPalTokenProvider
         try {
             $this->fetch( $credentials );
         } catch ( PayPalApiException $exception ) {
-            if ( $exception->isAuthenticationFailure() || 400 === $exception->status ) {
+            if ( $exception->isAuthenticationFailure() ) {
                 return false;
             }
 
@@ -223,7 +223,12 @@ class PayPalTokenProvider
         $body = $this->decode( $response );
 
         if ( ! $response->successful() ) {
-            throw PayPalApiException::fromResponse( $response->status(), $body, $response->header( 'PayPal-Debug-Id' ) ?: null );
+            throw PayPalApiException::fromResponse(
+                $response->status(),
+                $body,
+                $response->header( 'PayPal-Debug-Id' ) ?: null,
+                $response->header( 'Retry-After' ) ?: null,
+            );
         }
 
         return $body;

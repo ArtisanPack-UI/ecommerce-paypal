@@ -275,6 +275,7 @@ it( 'shapes the payment source per gateway', function (): void {
 
     expect( paypalPayload( $cart, PayPalCardGateway::class, [ 'return_url' => 'https://shop.test/r' ] )['payment_source'] )
         ->toBe( [ 'card' => [ 'experience_context' => [ 'return_url' => 'https://shop.test/r', 'cancel_url' => 'https://shop.test/r' ] ] ] )
+        ->and( paypalPayload( $cart, PayPalCardGateway::class ) )->not->toHaveKey( 'payment_source' )
         ->and( paypalPayload( $cart, PayPalApplePayGateway::class ) )->not->toHaveKey( 'payment_source' )
         ->and( paypalPayload( $cart, context: [ 'payment_source' => 'venmo' ] )['payment_source'] )->toHaveKey( 'venmo' );
 } );

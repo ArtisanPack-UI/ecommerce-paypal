@@ -43,3 +43,39 @@ it( 'redacts sensitive headers', function (): void {
     expect( PayPalRedactor::redactHeaders( [ 'Authorization' => 'Bearer x', 'PayPal-Request-Id' => 'abc' ] ) )
         ->toBe( [ 'Authorization' => PayPalRedactor::MASK, 'PayPal-Request-Id' => 'abc' ] );
 } );
+
+it( 'masks the rejected values echoed in error details', function (): void {
+    $redacted = PayPalRedactor::redact( [
+        'name'    => 'UNPROCESSABLE_ENTITY',
+        'details' => [ [ 'field' => '/payment_source/card/number', 'value' => '4111111111111111', 'issue' => 'INVALID_PARAMETER_VALUE' ] ],
+        'amount'  => [ 'value' => '10.00' ],
+    ] );
+
+    expect( $redacted['details'][0]['value'] )->toBe( PayPalRedactor::MASK )
+        ->and( $redacted['details'][0]['issue'] )->toBe( 'INVALID_PARAMETER_VALUE' )
+        ->and( $redacted['amount']['value'] )->toBe( '10.00' );
+} );
+
+it( 'masks saved-payment token ids', function (): void {
+    $redacted = PayPalRedactor::redactVault( [
+        'id'             => 'TOKEN-1',
+        'payment_tokens' => [ [ 'id' => 'TOKEN-2', 'customer' => [ 'id' => 'customer_1' ] ] ],
+        'links'          => [ [ 'href' => 'https://api-m.paypal.com/v3/vault/payment-tokens/TOKEN-1?x=1' ] ],
+    ] );
+
+    expect( $redacted['id'] )->toBe( PayPalRedactor::MASK )
+        ->and( $redacted['payment_tokens'][0]['id'] )->toBe( PayPalRedactor::MASK )
+        ->and( $redacted['payment_tokens'][0]['customer']['id'] )->toBe( 'customer_1' )
+        ->and( $redacted['links'][0]['href'] )->toBe( 'https://api-m.paypal.com/v3/vault/payment-tokens/' . PayPalRedactor::MASK . '?x=1' )
+        ->and( PayPalRedactor::redact( [ 'card' => [ 'vault_id' => 'TOKEN-3' ] ] )['card']['vault_id'] )->toBe( PayPalRedactor::MASK )
+        ->and( PayPalRedactor::redact( [ 'id' => 'ORDER-1' ] )['id'] )->toBe( 'ORDER-1' );
+} );
+
+it( 'masks token ids in paths', function ( string $path, string $expected ): void {
+    expect( PayPalRedactor::redactPath( $path ) )->toBe( $expected );
+} )->with( [
+    'payment token' => [ '/v3/vault/payment-tokens/TOKEN-1', '/v3/vault/payment-tokens/' . PayPalRedactor::MASK ],
+    'setup token'   => [ '/v3/vault/setup-tokens/SETUP-1', '/v3/vault/setup-tokens/' . PayPalRedactor::MASK ],
+    'list'          => [ '/v3/vault/payment-tokens', '/v3/vault/payment-tokens' ],
+    'order'         => [ '/v2/checkout/orders/ORDER-1', '/v2/checkout/orders/ORDER-1' ],
+] );

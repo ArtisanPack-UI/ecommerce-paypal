@@ -87,9 +87,14 @@ class InstallCommand extends Command
     {
         $this->components->info( __( 'Installing the PayPal gateway.' ) );
 
-        $this->publishConfig();
-        $this->publishAssets();
-        $this->migrations();
+        foreach ( [ 'publishConfig', 'publishAssets', 'migrations' ] as $step ) {
+            $status = $this->{$step}();
+
+            if ( self::SUCCESS !== $status ) {
+                return $status;
+            }
+        }
+
         $this->printFrontEnd();
         $this->printCsp();
         $this->printNextSteps();
@@ -102,9 +107,9 @@ class InstallCommand extends Command
      *
      * @since 1.0.0
      *
-     * @return void
+     * @return int The `vendor:publish` exit status.
      */
-    protected function publishConfig(): void
+    protected function publishConfig(): int
     {
         $exists = File::exists( config_path( self::CONFIG_FILE ) );
         $force  = (bool) $this->option( 'force' );
@@ -119,11 +124,11 @@ class InstallCommand extends Command
             if ( ! $force ) {
                 $this->components->info( __( 'Kept your existing config file.' ) );
 
-                return;
+                return self::SUCCESS;
             }
         }
 
-        $this->call( 'vendor:publish', [ '--tag' => 'ecommerce-paypal-config', '--force' => $force ] );
+        return $this->call( 'vendor:publish', [ '--tag' => 'ecommerce-paypal-config', '--force' => $force ] );
     }
 
     /**
@@ -131,11 +136,11 @@ class InstallCommand extends Command
      *
      * @since 1.0.0
      *
-     * @return void
+     * @return int The `vendor:publish` exit status.
      */
-    protected function publishAssets(): void
+    protected function publishAssets(): int
     {
-        $this->call( 'vendor:publish', [ '--tag' => 'ecommerce-paypal-assets', '--force' => true ] );
+        return $this->call( 'vendor:publish', [ '--tag' => 'ecommerce-paypal-assets', '--force' => true ] );
     }
 
     /**
@@ -143,9 +148,9 @@ class InstallCommand extends Command
      *
      * @since 1.0.0
      *
-     * @return void
+     * @return int The first failing nested command's exit status, or success.
      */
-    protected function migrations(): void
+    protected function migrations(): int
     {
         $migrate = (bool) $this->option( 'migrate' )
             || ( $this->input->isInteractive() && $this->components->confirm( __( 'Publish and run the PayPal migrations now?' ), false ) );
@@ -153,11 +158,12 @@ class InstallCommand extends Command
         if ( ! $migrate ) {
             $this->components->info( __( 'Skipped the migrations. Run php artisan migrate when you are ready.' ) );
 
-            return;
+            return self::SUCCESS;
         }
 
-        $this->call( 'vendor:publish', [ '--tag' => 'ecommerce-paypal-migrations' ] );
-        $this->call( 'migrate', [ '--force' => true ] );
+        $status = $this->call( 'vendor:publish', [ '--tag' => 'ecommerce-paypal-migrations' ] );
+
+        return self::SUCCESS === $status ? $this->call( 'migrate', [ '--force' => true ] ) : $status;
     }
 
     /**

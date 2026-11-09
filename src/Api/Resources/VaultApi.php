@@ -49,18 +49,19 @@ final class VaultApi
      *
      * @param  string  $customerId  PayPal customer id.
      * @param  int     $page        Page, from 1.
-     * @param  int     $pageSize    Tokens per page (1–20).
+     * @param  int     $pageSize    Tokens per page (PayPal allows 1–5).
      *
      * @throws PayPalApiException On failure.
      *
      * @return PayPalPaymentTokenList
      */
-    public function listPaymentTokens( string $customerId, int $page = 1, int $pageSize = 20 ): PayPalPaymentTokenList
+    public function listPaymentTokens( string $customerId, int $page = 1, int $pageSize = 5 ): PayPalPaymentTokenList
     {
         return PayPalPaymentTokenList::fromArray( $this->client->get( '/v3/vault/payment-tokens', [
-            'customer_id' => $customerId,
-            'page'        => max( 1, $page ),
-            'page_size'   => min( 20, max( 1, $pageSize ) ),
+            'customer_id'    => $customerId,
+            'page'           => max( 1, $page ),
+            'page_size'      => min( 5, max( 1, $pageSize ) ),
+            'total_required' => 'true',
         ] ) );
     }
 

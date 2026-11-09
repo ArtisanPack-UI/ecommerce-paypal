@@ -195,9 +195,7 @@ final class PayPalOrder extends PayPalData
      */
     public function latestCapture(): ?PayPalCapture
     {
-        $captures = $this->captures();
-
-        return [] === $captures ? null : $captures[ array_key_last( $captures ) ];
+        return self::newest( $this->captures(), [ 'COMPLETED', 'PARTIALLY_REFUNDED', 'REFUNDED' ] );
     }
 
     /**
@@ -209,9 +207,7 @@ final class PayPalOrder extends PayPalData
      */
     public function latestAuthorization(): ?PayPalAuthorization
     {
-        $authorizations = $this->authorizations();
-
-        return [] === $authorizations ? null : $authorizations[ array_key_last( $authorizations ) ];
+        return self::newest( $this->authorizations(), [ 'CAPTURED', 'PARTIALLY_CAPTURED', 'CREATED' ] );
     }
 
     /**
@@ -233,5 +229,61 @@ final class PayPalOrder extends PayPalData
         $vault = $this->get( 'payment_source.' . $type . '.attributes.vault' );
 
         return is_array( $vault ) ? $vault : null;
+    }
+
+    /**
+     * The newest item (by `create_time`, then list order) whose status is
+     * one of `$settled`, or the newest item when none is.
+     *
+     * A later pending retry doesn't hide an earlier completed capture.
+     *
+     * @since 1.0.0
+     *
+     * @template T of PayPalData
+     *
+     * @param  array<int, T>       $items    Captures or authorizations.
+     * @param  array<int, string>  $settled  Statuses that settle the payment.
+     *
+     * @return T|null
+     */
+    private static function newest( array $items, array $settled ): ?PayPalData
+    {
+        if ( [] === $items ) {
+            return null;
+        }
+
+        $order = array_keys( $items );
+
+        usort( $order, static function ( int $left, int $right ) use ( $items ): int {
+            $byTime = self::createdAt( $items[ $left ] ) <=> self::createdAt( $items[ $right ] );
+
+            return 0 !== $byTime ? $byTime : $left <=> $right;
+        } );
+
+        $sorted = array_map( static fn ( int $index ): PayPalData => $items[ $index ], $order );
+
+        foreach ( array_reverse( $sorted ) as $item ) {
+            if ( in_array( $item->status(), $settled, true ) ) {
+                return $item;
+            }
+        }
+
+        return $sorted[ array_key_last( $sorted ) ];
+    }
+
+    /**
+     * An item's `create_time` as a timestamp (0 when missing).
+     *
+     * @since 1.0.0
+     *
+     * @param  PayPalData  $item  Capture or authorization.
+     *
+     * @return int
+     */
+    private static function createdAt( PayPalData $item ): int
+    {
+        $time = $item->get( 'create_time' );
+
+        return is_string( $time ) && false !== strtotime( $time ) ? (int) strtotime( $time ) : 0;
     }
 }

@@ -44,6 +44,7 @@ class PayPalApiException extends RuntimeException
      * @param  array<int, array{issue?: string, description?: string, field?: string}>  $details    PayPal's `details[]`.
      * @param  string|null                                                    $debugId    PayPal's debug id.
      * @param  Throwable|null                                                 $previous   Underlying exception.
+     * @param  string|null                                                    $retryAfter The `Retry-After` header PayPal sent, if any.
      */
     public function __construct(
         string $message,
@@ -52,6 +53,7 @@ class PayPalApiException extends RuntimeException
         public readonly array $details = [],
         public readonly ?string $debugId = null,
         ?Throwable $previous = null,
+        public readonly ?string $retryAfter = null,
     ) {
         parent::__construct( $message, $status, $previous );
     }
@@ -67,11 +69,12 @@ class PayPalApiException extends RuntimeException
      *
      * @param  int                   $status   HTTP status.
      * @param  array<string, mixed>  $body     Decoded response body.
-     * @param  string|null           $debugId  The `PayPal-Debug-Id` header.
+     * @param  string|null           $debugId     The `PayPal-Debug-Id` header.
+     * @param  string|null           $retryAfter  The `Retry-After` header.
      *
      * @return self
      */
-    public static function fromResponse( int $status, array $body, ?string $debugId = null ): self
+    public static function fromResponse( int $status, array $body, ?string $debugId = null, ?string $retryAfter = null ): self
     {
         $name    = $body['name'] ?? $body['error'] ?? null;
         $message = $body['message'] ?? $body['error_description'] ?? null;
@@ -95,6 +98,7 @@ class PayPalApiException extends RuntimeException
             is_string( $name ) ? $name : null,
             $details,
             $debugId ?? ( isset( $body['debug_id'] ) ? (string) $body['debug_id'] : null ),
+            retryAfter: null === $retryAfter || '' === trim( $retryAfter ) ? null : trim( $retryAfter ),
         );
     }
 

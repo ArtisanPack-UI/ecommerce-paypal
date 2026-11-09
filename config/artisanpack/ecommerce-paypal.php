@@ -38,8 +38,10 @@ return [
     |
     | `sandbox` or `live`. Selects the PayPal API host (api-m.paypal.com or
     | api-m.sandbox.paypal.com), the web host, and the dashboard links.
-    | Switching to `live` is refused from the settings screen unless the
-    | credentials obtain a live access token.
+    | The settings screen refuses to save PayPal enabled in `live` mode when
+    | PayPal rejects the credentials. It can't stop a live switch when
+    | PayPal is unreachable or the credentials are incomplete, so run
+    | `php artisan ecommerce-paypal:verify-credentials` after going live.
     |
     */
 

@@ -33,6 +33,7 @@ it( 'converts PayPal amounts back to engine money', function ( array $amount, in
     'USD whole'       => [ [ 'currency_code' => 'USD', 'value' => '7' ], 700 ],
     'JPY'             => [ [ 'currency_code' => 'JPY', 'value' => '12345' ], 12345 ],
     'HUF whole'       => [ [ 'currency_code' => 'HUF', 'value' => '1235' ], 123500 ],
+    'HUF zero cents'  => [ [ 'currency_code' => 'HUF', 'value' => '1235.00' ], 123500 ],
     'zero'            => [ [ 'currency_code' => 'EUR', 'value' => '0.00' ], 0 ],
     'negative'        => [ [ 'currency_code' => 'USD', 'value' => '-2.25' ], -225 ],
 ] );
@@ -48,6 +49,8 @@ it( 'rejects malformed PayPal amounts', function ( array $amount, ?string $expec
     'not a number'       => [ [ 'currency_code' => 'USD', 'value' => '1,00' ], null ],
     'too many decimals'  => [ [ 'currency_code' => 'USD', 'value' => '1.001' ], null ],
     'JPY with decimals'  => [ [ 'currency_code' => 'JPY', 'value' => '100.5' ], null ],
+    'HUF with decimals'  => [ [ 'currency_code' => 'HUF', 'value' => '1235.50' ], null ],
+    'TWD with decimals'  => [ [ 'currency_code' => 'TWD', 'value' => '500.01' ], null ],
     'currency mismatch'  => [ [ 'currency_code' => 'EUR', 'value' => '1.00' ], 'USD' ],
 ] )->throws( InvalidArgumentException::class );
 

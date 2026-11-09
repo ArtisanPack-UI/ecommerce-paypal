@@ -324,7 +324,7 @@ class OrderPayloadBuilder
                     ...$urls,
                 ], static fn ( ?string $value ): bool => null !== $value && '' !== $value ),
             ],
-            'card'  => [] === $urls ? [] : [ 'experience_context' => $urls ],
+            'card'  => [] === $urls ? null : [ 'experience_context' => $urls ],
             default => null,
         };
     }
