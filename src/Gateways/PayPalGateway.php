@@ -34,8 +34,10 @@ use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalApiException;
 use ArtisanPackUI\EcommercePayPal\Payloads\OrderPayloadBuilder;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalCurrencies;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalDeclines;
+use ArtisanPackUI\EcommercePayPal\Support\PayPalLocale;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalMoney;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalOrderMeta;
+use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalOrderLocator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
@@ -533,11 +535,25 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
     }
 
     /**
-     * Describes the browser-side payment step.
+     * Describes the browser-side payment step (spec §9.1, issue #14).
      *
-     * The PayPal JS SDK needs the client id (public), the Order id, the
-     * currency, and the intent. The full configuration (button style,
-     * funding sources, 3-D Secure) arrives with the shared JS module (#14).
+     * Read by `resources/js/paypal-checkout.js` through the storefront
+     * driver named by `driver`. It never carries a secret: the client id is
+     * public, and the PayPal Order id (`client_secret`, also `options.order_id`)
+     * is what the SDK's `createOrder` returns, because the Order was created
+     * server-side in {@see self::createPaymentSession()}.
+     *
+     * `options` holds the SDK settings (currency, intent, locale, components,
+     * enable/disable funding), the amount as PayPal writes it (for wallet
+     * sheets and Pay Later messages), `restart` (the buyer's funding source
+     * was declined at capture, so the buttons reopen PayPal on the same
+     * Order), plus the driver's own options
+     * ({@see self::driverOptions()}). `components` is the same for every
+     * gateway in the family, so a checkout page that renders several of them
+     * loads the SDK once. The result passes through
+     * `ap.ecommerce.paypal.clientConfig` `(array $config, Cart $cart,
+     * PaymentSession $session, PayPalGateway $gateway)`, which is where a
+     * `user_id_token` for returning vault buyers is added.
      *
      * @since 1.0.0
      *
@@ -548,19 +564,184 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
      */
     public function clientConfig( Cart $cart, PaymentSession $session ): array
     {
-        return [
+        $sdk    = self::sdkConfig( $session->amount->getCurrency()->getCode() );
+        $config = [
             'driver'          => $this->driver(),
             'flow'            => 'embedded',
-            'publishable_key' => $this->client->credentials()->clientId,
-            'client_secret'   => null,
+            'publishable_key' => $sdk['publishable_key'],
+            'client_secret'   => $session->reference,
             'redirect_url'    => $session->redirectUrl,
-            'options'         => [
+            'options'         => array_merge( [
                 'order_id' => $session->reference,
-                'currency' => $session->amount->getCurrency()->getCode(),
-                'intent'   => 'authorize' === strtolower( (string) config( 'artisanpack.ecommerce-paypal.intent', 'capture' ) ) ? 'authorize' : 'capture',
-                'mode'     => $this->client->environment()->mode,
+                'amount'   => PayPalMoney::toPayPal( $session->amount )['value'],
+                'restart'  => $this->wasDeclined( $session->reference ),
+            ], $sdk['options'], $this->driverOptions() ),
+        ];
+
+        $filtered = applyFilters( 'ap.ecommerce.paypal.clientConfig', $config, $cart, $session, $this );
+
+        if ( ! is_array( $filtered ) || ! is_array( $filtered['options'] ?? null ) ) {
+            return $config;
+        }
+
+        // The filter may add options (a user id token), never swap the
+        // driver, the Order, or the client id out from under the checkout.
+        $locked = array_merge( $filtered, [
+            'driver'          => $config['driver'],
+            'flow'            => $config['flow'],
+            'publishable_key' => $config['publishable_key'],
+            'client_secret'   => $config['client_secret'],
+        ] );
+
+        // The SDK reads the Order, amount, currency, and intent from
+        // `options`, so those stay the session's too.
+        foreach ( [ 'order_id', 'amount', 'currency', 'intent' ] as $key ) {
+            $locked['options'][ $key ] = $config['options'][ $key ];
+        }
+
+        return $locked;
+    }
+
+    /**
+     * The public settings the JS SDK is loaded with for `$currency`: the
+     * client id, plus currency, intent, mode, locale, components, and
+     * funding. Every PayPal surface on a page (the checkout drivers, Pay
+     * Later messages) uses these, so `paypal-checkout.js` loads the SDK once.
+     *
+     * @since 1.0.0
+     *
+     * @param  string  $currency  ISO currency code.
+     *
+     * @return array{publishable_key: string|null, options: array{currency: string, intent: string, mode: string, locale: string, components: array<int, string>, enable_funding: array<int, string>, disable_funding: array<int, string>}}
+     */
+    public static function sdkConfig( string $currency ): array
+    {
+        $client = app( PayPalClient::class );
+
+        return [
+            'publishable_key' => $client->credentials()->clientId,
+            'options'         => [
+                'currency'        => strtoupper( $currency ),
+                'intent'          => self::sdkIntent(),
+                'mode'            => $client->environment()->mode,
+                'locale'          => str_replace( '-', '_', PayPalLocale::resolve() ),
+                'components'      => self::sdkComponents(),
+                'enable_funding'  => self::enabledFunding(),
+                'disable_funding' => self::disabledFunding(),
             ],
         ];
+    }
+
+    /**
+     * The JS SDK components every gateway in the family loads, from the
+     * enabled methods and Pay Later messaging placements: `buttons`,
+     * `messages`, `card-fields`, `applepay`, `googlepay`.
+     *
+     * @since 1.0.0
+     *
+     * @return array<int, string>
+     */
+    public static function sdkComponents(): array
+    {
+        $methods    = (array) config( 'artisanpack.ecommerce-paypal.methods', [] );
+        $on         = static fn ( string $method ): bool => (bool) data_get( $methods, $method . '.enabled', false );
+        $messaging  = array_filter( (array) config( 'artisanpack.ecommerce-paypal.pay_later_messaging', [] ) );
+        $components = [];
+
+        if ( $on( 'paypal' ) ) {
+            $components[] = 'buttons';
+        }
+
+        if ( ( $on( 'paypal' ) && (bool) data_get( $methods, 'paypal.pay_later', false ) ) || [] !== $messaging ) {
+            $components[] = 'messages';
+        }
+
+        foreach ( [ 'card' => 'card-fields', 'apple_pay' => 'applepay', 'google_pay' => 'googlepay' ] as $method => $component ) {
+            if ( $on( $method ) ) {
+                $components[] = $component;
+            }
+        }
+
+        return $components;
+    }
+
+    /**
+     * The SDK `intent` (`capture` or `authorize`).
+     *
+     * @since 1.0.0
+     *
+     * @return string
+     */
+    public static function sdkIntent(): string
+    {
+        return 'authorize' === strtolower( (string) config( 'artisanpack.ecommerce-paypal.intent', 'capture' ) ) ? 'authorize' : 'capture';
+    }
+
+    /**
+     * Funding sources the SDK should offer beyond its defaults (`venmo`,
+     * `paylater`).
+     *
+     * @since 1.0.0
+     *
+     * @return array<int, string>
+     */
+    public static function enabledFunding(): array
+    {
+        return array_keys( array_filter( [
+            'venmo'    => (bool) config( 'artisanpack.ecommerce-paypal.methods.paypal.venmo', false ),
+            'paylater' => (bool) config( 'artisanpack.ecommerce-paypal.methods.paypal.pay_later', false ),
+        ] ) );
+    }
+
+    /**
+     * Funding sources the PayPal buttons must not show: Venmo and Pay Later
+     * when switched off, and the card button while cards have their own
+     * checkout choice (`paypal-card`, spec D3).
+     *
+     * @since 1.0.0
+     *
+     * @return array<int, string>
+     */
+    public static function disabledFunding(): array
+    {
+        return array_keys( array_filter( [
+            'venmo'    => ! (bool) config( 'artisanpack.ecommerce-paypal.methods.paypal.venmo', false ),
+            'paylater' => ! (bool) config( 'artisanpack.ecommerce-paypal.methods.paypal.pay_later', false ),
+            'card'     => (bool) config( 'artisanpack.ecommerce-paypal.methods.card.enabled', false ),
+        ] ) );
+    }
+
+    /**
+     * Whether the buyer's funding source was declined when PayPal Order
+     * `$paypalOrderId` was captured, so the driver reopens PayPal on the same
+     * Order for them to pick another (spec §7.3, §9.3).
+     *
+     * @since 1.0.0
+     *
+     * @param  string  $paypalOrderId  PayPal Order id.
+     *
+     * @return bool
+     */
+    protected function wasDeclined( string $paypalOrderId ): bool
+    {
+        $order = app( PayPalOrderLocator::class )->forPayPalOrder( $paypalOrderId );
+
+        return null !== $order
+            && PayPalOrderMeta::describes( $order, $paypalOrderId )
+            && (int) PayPalOrderMeta::get( $order, 'instrument_declines', 0 ) > 0
+            && null === PayPalOrderMeta::get( $order, 'capture_id' );
+    }
+
+    /**
+     * Options only this gateway's driver reads (button style, 3-D Secure).
+     *
+     * @since 1.0.0
+     *
+     * @return array<string, mixed>
+     */
+    protected function driverOptions(): array
+    {
+        return [];
     }
 
     /**
@@ -857,8 +1038,11 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
      */
     protected function captureOrder( Order $order, PayPalOrder $paypalOrder, PaymentSession $session ): PaymentResult
     {
+        $declines  = PayPalOrderMeta::describes( $order, $paypalOrder->id() ) ? (int) PayPalOrderMeta::get( $order, 'instrument_declines', 0 ) : 0;
+        $requestId = 'capture-' . $paypalOrder->id() . ( $declines > 0 ? '-' . ( $declines + 1 ) : '' );
+
         try {
-            $captured = $this->client->orders()->capture( $paypalOrder->id(), 'capture-' . $paypalOrder->id() );
+            $captured = $this->client->orders()->capture( $paypalOrder->id(), $requestId );
         } catch ( PayPalApiException $exception ) {
             if ( $exception->hasIssue( 'ORDER_ALREADY_CAPTURED' ) ) {
                 $current = $this->refetch( $paypalOrder->id() );
@@ -866,6 +1050,14 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
                 if ( null !== $current?->latestCapture() ) {
                     return $this->resultFromOrder( $order, $current, $session );
                 }
+            }
+
+            if ( $exception->hasIssue( 'INSTRUMENT_DECLINED' ) ) {
+                // The buyer picks another funding source for the same Order
+                // (PayPal's restart flow). The next capture needs a new
+                // request id, or PayPal could answer with this decline again;
+                // an Order is only ever captured once, so it can't charge twice.
+                PayPalOrderMeta::merge( $order, [ 'instrument_declines' => $declines + 1 ], $paypalOrder->id() );
             }
 
             return PayPalDeclines::payment( $exception, $session->amount );

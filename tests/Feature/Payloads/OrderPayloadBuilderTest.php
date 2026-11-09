@@ -273,9 +273,15 @@ it( 'falls back to the storefront checkout routes', function (): void {
 it( 'shapes the payment source per gateway', function (): void {
     $cart = CartBuilder::make( [ [ 'Shirt', 1000, 1 ] ] );
 
-    expect( paypalPayload( $cart, PayPalCardGateway::class, [ 'return_url' => 'https://shop.test/r' ] )['payment_source'] )
-        ->toBe( [ 'card' => [ 'experience_context' => [ 'return_url' => 'https://shop.test/r', 'cancel_url' => 'https://shop.test/r' ] ] ] )
-        ->and( paypalPayload( $cart, PayPalCardGateway::class ) )->not->toHaveKey( 'payment_source' )
+    // storefront-livewire is installed in the test app, so its return and
+    // checkout routes are the defaults.
+
+    expect( paypalPayload( $cart, PayPalCardGateway::class, [ 'return_url' => 'https://shop.test/r', 'cancel_url' => 'https://shop.test/c' ] )['payment_source'] )
+        ->toBe( [ 'card' => [ 'experience_context' => [ 'return_url' => 'https://shop.test/r', 'cancel_url' => 'https://shop.test/c' ] ] ] )
+        ->and( paypalPayload( $cart, PayPalCardGateway::class )['payment_source']['card']['experience_context'] )->toBe( [
+            'return_url' => route( 'artisanpack.ecommerce.storefront.checkout.return' ),
+            'cancel_url' => route( 'artisanpack.ecommerce.storefront.checkout' ),
+        ] )
         ->and( paypalPayload( $cart, PayPalApplePayGateway::class ) )->not->toHaveKey( 'payment_source' )
         ->and( paypalPayload( $cart, context: [ 'payment_source' => 'venmo' ] )['payment_source'] )->toHaveKey( 'venmo' );
 } );

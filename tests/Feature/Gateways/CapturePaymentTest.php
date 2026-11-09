@@ -341,3 +341,36 @@ describe( 'liability shift policy', function (): void {
         expect( app( PayPalWalletGateway::class )->capturePayment( Orders::create(), Orders::session() )->success )->toBeTrue();
     } );
 } );
+
+describe( 'instrument declined restart', function (): void {
+    it( 'records the decline and asks the buttons to restart on the same Order', function (): void {
+        $order = Orders::create();
+        $this->paypal->error( 'orders.capture', 'instrument-declined' );
+
+        $result = app( PayPalWalletGateway::class )->capturePayment( $order, Orders::session() );
+        $config = app( PayPalWalletGateway::class )->clientConfig( new ArtisanPackUI\Ecommerce\Models\Cart(), Orders::session() );
+
+        expect( $result->errorCode )->toBe( 'instrument_declined' )
+            ->and( $result->retryable )->toBeTrue()
+            ->and( PayPalOrderMeta::get( $order->fresh(), 'instrument_declines' ) )->toBe( 1 )
+            ->and( $config['options']['restart'] )->toBeTrue()
+            ->and( $config['client_secret'] )->toBe( Orders::ORDER_ID );
+    } );
+
+    it( 'captures the retry with a new request id', function (): void {
+        $order = Orders::create();
+        $this->paypal->error( 'orders.capture', 'instrument-declined' );
+
+        app( PayPalWalletGateway::class )->capturePayment( $order, Orders::session() );
+        $result = app( PayPalWalletGateway::class )->capturePayment( $order->fresh(), Orders::session() );
+
+        $ids = array_map( fn ( Request $request ): string => $request->header( 'PayPal-Request-Id' )[0], $this->paypal->sent( 'orders.capture' ) );
+
+        expect( $result->success )->toBeTrue()
+            ->and( $ids )->toBe( [ 'capture-' . Orders::ORDER_ID, 'capture-' . Orders::ORDER_ID . '-2' ] );
+
+        $config = app( PayPalWalletGateway::class )->clientConfig( new ArtisanPackUI\Ecommerce\Models\Cart(), Orders::session() );
+
+        expect( $config['options']['restart'] )->toBeFalse();
+    } );
+} );

@@ -15,6 +15,7 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\EcommercePayPal\Api;
 
+use ArtisanPackUI\EcommercePayPal\Api\Resources\DisputesApi;
 use ArtisanPackUI\EcommercePayPal\Api\Resources\OrdersApi;
 use ArtisanPackUI\EcommercePayPal\Api\Resources\PaymentsApi;
 use ArtisanPackUI\EcommercePayPal\Api\Resources\VaultApi;
@@ -195,6 +196,18 @@ class PayPalClient
     public function vault(): VaultApi
     {
         return new VaultApi( $this );
+    }
+
+    /**
+     * Customer Disputes v1 (read-only).
+     *
+     * @since 1.0.0
+     *
+     * @return DisputesApi
+     */
+    public function disputes(): DisputesApi
+    {
+        return new DisputesApi( $this );
     }
 
     /**

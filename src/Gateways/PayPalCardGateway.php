@@ -108,4 +108,19 @@ class PayPalCardGateway extends PayPalGateway
     {
         return (bool) config( 'artisanpack.ecommerce-paypal.vault.enabled', false );
     }
+
+    /**
+     * The 3-D Secure setting and liability-shift policy.
+     *
+     * @since 1.0.0
+     *
+     * @return array<string, mixed>
+     */
+    protected function driverOptions(): array
+    {
+        return [
+            'three_d_secure'          => (string) config( 'artisanpack.ecommerce-paypal.methods.card.three_d_secure', 'SCA_WHEN_REQUIRED' ),
+            'require_liability_shift' => (bool) config( 'artisanpack.ecommerce-paypal.methods.card.require_liability_shift', true ),
+        ];
+    }
 }

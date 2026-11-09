@@ -1,0 +1,24 @@
+{
+    "dispute_id": "PP-D-27803",
+    "create_time": "2026-11-12T10:00:00.000Z",
+    "update_time": "2026-11-12T10:00:00.000Z",
+    "disputed_transactions": [
+        {
+            "seller_transaction_id": "3C679366HH908993F",
+            "create_time": "2026-11-09T12:05:00.000Z",
+            "transaction_status": "COMPLETED",
+            "gross_amount": { "currency_code": "USD", "value": "100.00" },
+            "invoice_number": "cart-1-1",
+            "custom": "1"
+        }
+    ],
+    "reason": "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+    "status": "WAITING_FOR_SELLER_RESPONSE",
+    "dispute_amount": { "currency_code": "USD", "value": "100.00" },
+    "seller_response_due_date": "2026-11-22T10:00:00.000Z",
+    "dispute_life_cycle_stage": "INQUIRY",
+    "dispute_channel": "INTERNAL",
+    "links": [
+        { "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-27803", "rel": "self", "method": "GET" }
+    ]
+}

@@ -86,6 +86,7 @@ final class PayPalFake
         'payments.captures.get'               => [ 'GET', '#^/v2/payments/captures/[^/]+$#', 'payments/capture', 200 ],
         'payments.captures.refund'            => [ 'POST', '#^/v2/payments/captures/[^/]+/refund$#', 'payments/refund', 201 ],
         'payments.refunds.get'                => [ 'GET', '#^/v2/payments/refunds/[^/]+$#', 'payments/refund', 200 ],
+        'disputes.get'                        => [ 'GET', '#^/v1/customer/disputes/[^/]+$#', 'disputes/dispute', 200 ],
         'vault.payment_tokens.list'           => [ 'GET', '#^/v3/vault/payment-tokens$#', 'vault/payment-tokens', 200 ],
         'vault.payment_tokens.get'            => [ 'GET', '#^/v3/vault/payment-tokens/[^/]+$#', 'vault/payment-token', 200 ],
         'vault.payment_tokens.delete'         => [ 'DELETE', '#^/v3/vault/payment-tokens/[^/]+$#', null, 204 ],

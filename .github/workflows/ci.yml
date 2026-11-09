@@ -185,3 +185,32 @@ jobs:
           --path="$GITHUB_WORKSPACE/src"
           --path="$GITHUB_WORKSPACE/resources"
           --lang="$GITHUB_WORKSPACE/lang"
+
+  js:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    name: JS module
+
+    # Unit tests for resources/js/paypal-checkout.js, and a check that the
+    # committed dist/ build matches its source.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Vitest
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Check dist/ is up to date
+        run: git diff --exit-code -- dist/ || (echo "dist/ is out of date. Run npm run build and commit it." && exit 1)

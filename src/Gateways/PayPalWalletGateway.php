@@ -17,6 +17,8 @@ namespace ArtisanPackUI\EcommercePayPal\Gateways;
 
 use ArtisanPackUI\Ecommerce\Contracts\SharesWebhookEndpoint;
 use ArtisanPackUI\Ecommerce\ValueObjects\WebhookResult;
+use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalApiException;
+use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalEventMapper;
 use ArtisanPackUI\EcommercePayPal\Webhooks\WebhookVerifier;
 use Illuminate\Http\Request;
 
@@ -151,17 +153,40 @@ class PayPalWalletGateway extends PayPalGateway implements SharesWebhookEndpoint
      *
      * Every delivery is signature-checked by {@see WebhookVerifier} first
      * (spec §8.1); one that fails is refused with the verifier's code. A
-     * verified delivery is returned with its event type, id, and payload;
-     * the payment outcome each event carries is mapped in #12.
+     * verified delivery is mapped to the engine's payment outcome by
+     * {@see PayPalEventMapper} (spec §8.2), which the engine reconciles
+     * across the whole gateway family. Notes, refunds, and disputes are
+     * handled afterwards, once the engine has deduplicated the delivery
+     * ({@see \ArtisanPackUI\EcommercePayPal\Webhooks\PayPalWebhookProcessor}).
      *
      * @since 1.0.0
      *
      * @param  Request  $request  Request.
      *
+     * @throws PayPalApiException When PayPal can't be reached to confirm a failed payment (PayPal redelivers).
+     *
      * @return WebhookResult
      */
     public function handleWebhook( Request $request ): WebhookResult
     {
-        return app( WebhookVerifier::class )->verify( $request );
+        return app( PayPalEventMapper::class )->map( app( WebhookVerifier::class )->verify( $request ) );
+    }
+
+    /**
+     * The buttons' style and the Pay Later and Venmo switches.
+     *
+     * @since 1.0.0
+     *
+     * @return array<string, mixed>
+     */
+    protected function driverOptions(): array
+    {
+        $style = (array) config( 'artisanpack.ecommerce-paypal.methods.paypal.button', [] );
+
+        return [
+            'button'    => array_intersect_key( $style, array_flip( [ 'layout', 'color', 'shape', 'label', 'height', 'tagline' ] ) ),
+            'pay_later' => (bool) config( 'artisanpack.ecommerce-paypal.methods.paypal.pay_later', false ),
+            'venmo'     => (bool) config( 'artisanpack.ecommerce-paypal.methods.paypal.venmo', false ),
+        ];
     }
 }
