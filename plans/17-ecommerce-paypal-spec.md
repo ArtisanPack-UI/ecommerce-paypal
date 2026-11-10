@@ -155,7 +155,7 @@ The same values are exposed in the engine's settings UI through `SettingsRegistr
 | `paypal-apple-pay` | Apple Pay | `paypal-apple-pay` | `apple_pay` | yes | no |
 | `paypal-google-pay` | Google Pay | `paypal-google-pay` | `google_pay` | yes | no |
 
-All four extend an abstract `PayPalGateway` that shares the client, payload builder, capture, void, refund, and status mapping. Each subclass supplies its key, label, payment source, and client config. Only `paypal` serves webhooks. Its `handleWebhook()` verifies and maps every event (§8), and it implements `SharesWebhookEndpoint::webhookGatewayKeys()`, returning the enabled sibling keys (#207). A webhook posted to a sibling key's URL (`webhooks/paypal-card`) returns `WebhookResult::unverified( 'use_paypal_endpoint' )`.
+All four extend an abstract `PayPalGateway` that shares the client, payload builder, capture, void, refund, and status mapping. Each subclass supplies its key, label, payment source, and client config. Only `paypal` serves webhooks. Its `handleWebhook()` verifies and maps every event (§8), and it implements `SharesWebhookEndpoint::webhookGatewayKeys()`, returning all sibling keys, enabled or not, so a method switched off after orders were placed still reconciles (#207). A webhook posted to a sibling key's URL (`webhooks/paypal-card`) returns `WebhookResult::unverified( 'use_paypal_endpoint' )`.
 
 ### 6.2 Availability
 

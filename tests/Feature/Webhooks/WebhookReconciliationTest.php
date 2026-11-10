@@ -3,6 +3,7 @@
 declare( strict_types=1 );
 
 use ArtisanPackUI\Ecommerce\Checkout\CheckoutState;
+use ArtisanPackUI\Ecommerce\Events\PaymentFailed;
 use ArtisanPackUI\Ecommerce\Models\Cart;
 use ArtisanPackUI\Ecommerce\Models\InboundWebhookDelivery;
 use ArtisanPackUI\Ecommerce\Models\Order;
@@ -12,14 +13,20 @@ use ArtisanPackUI\Ecommerce\Models\Refund;
 use ArtisanPackUI\Ecommerce\ValueObjects\WebhookResult;
 use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalApiException;
 use ArtisanPackUI\EcommercePayPal\Jobs\ProcessPayPalWebhook;
+use ArtisanPackUI\EcommercePayPal\Payments\AuthorizationLifecycle;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalOrderMeta;
 use ArtisanPackUI\EcommercePayPal\Testing\PayPalFake;
 use ArtisanPackUI\EcommercePayPal\Webhooks\Handlers\CaptureEventHandler;
 use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalEventMapper;
 use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalWebhookProcessor;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Exceptions;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Sleep;
+use Monolog\Handler\TestHandler;
 use Tests\Support\PayPalTestOrders as Orders;
 use Tests\Support\PayPalWebhooks as Webhooks;
 
@@ -246,7 +253,7 @@ describe( 'refunds made in PayPal', function (): void {
     it( 'does not duplicate a refund the store issued (matched by custom_id)', function (): void {
         $order  = webhookPaidOrder();
         $issued = Refund::query()->create( [ 'order_id' => $order->id, 'amount' => 1000, 'currency' => 'USD', 'status' => Refund::STATUS_PENDING ] );
-        $this->paypal->respond( 'payments.refunds.get', Orders::body( 'payments/refund', [ 'custom_id' => (string) $issued->id ] ) );
+        $this->paypal->respond( 'payments.refunds.get', Orders::body( 'payments/refund', [ 'custom_id' => (string) $issued->id, 'invoice_id' => 'refund-' . $issued->id ] ) );
 
         Webhooks::post( $this, 'PAYMENT.CAPTURE.REFUNDED', Webhooks::refund() )->assertOk();
 
@@ -254,15 +261,48 @@ describe( 'refunds made in PayPal', function (): void {
             ->and( $order->fresh()->total_refunded_amount )->toBe( 0 );
     } );
 
-    it( 'notes a refund PayPal completed that the store recorded as failed', function (): void {
+    it( 'does not take a custom_id as the store\'s refund id unless the invoice_id matches it', function (): void {
         $order  = webhookPaidOrder();
-        $failed = Refund::query()->create( [ 'order_id' => $order->id, 'amount' => 1000, 'currency' => 'USD', 'status' => Refund::STATUS_FAILED ] );
-        $this->paypal->respond( 'payments.refunds.get', Orders::body( 'payments/refund', [ 'custom_id' => (string) $failed->id ] ) );
+        $issued = Refund::query()->create( [ 'order_id' => $order->id, 'amount' => 1000, 'currency' => 'USD', 'status' => Refund::STATUS_PENDING ] );
+        $this->paypal->respond( 'payments.refunds.get', Orders::body( 'payments/refund', [ 'custom_id' => (string) $issued->id, 'invoice_id' => 'INV-ELSEWHERE' ] ) );
 
         Webhooks::post( $this, 'PAYMENT.CAPTURE.REFUNDED', Webhooks::refund() )->assertOk();
 
+        expect( Refund::query()->count() )->toBe( 2 )
+            ->and( Refund::query()->where( 'gateway_reference', '1JU08902781691411' )->sole()->id )->not->toBe( $issued->id )
+            ->and( $issued->fresh()->status )->toBe( Refund::STATUS_PENDING )
+            ->and( $order->fresh()->total_refunded_amount )->toBe( 1000 );
+    } );
+
+    it( 'settles a refund the store recorded as failed when PayPal completed it', function (): void {
+        $order  = webhookPaidOrder();
+        $failed = Refund::query()->create( [ 'order_id' => $order->id, 'amount' => 1000, 'currency' => 'USD', 'status' => Refund::STATUS_FAILED ] );
+        $this->paypal->respond( 'payments.refunds.get', Orders::body( 'payments/refund', [ 'custom_id' => (string) $failed->id, 'invoice_id' => 'refund-' . $failed->id ] ) );
+
+        Webhooks::post( $this, 'PAYMENT.CAPTURE.REFUNDED', Webhooks::refund() )->assertOk();
+
+        $refund = $failed->fresh();
+
         expect( Refund::query()->count() )->toBe( 1 )
-            ->and( OrderTimelineEntry::query()->where( 'order_id', $order->id )->where( 'event_type', 'paypal.refund_not_recorded' )->sole()->payload['error'] )->toContain( 'recorded it as failed' );
+            ->and( $refund->status )->toBe( Refund::STATUS_SUCCEEDED )
+            ->and( $refund->gateway_reference )->toBe( '1JU08902781691411' )
+            ->and( $order->fresh()->total_refunded_amount )->toBe( 1000 )
+            ->and( $order->fresh()->payment_status )->toBe( 'partially_refunded' )
+            ->and( OrderTimelineEntry::query()->where( 'order_id', $order->id )->where( 'event_type', 'paypal.refund_settled' )->sole()->payload )->toMatchArray( [ 'refund_id' => '1JU08902781691411', 'store_refund_id' => $failed->id ] )
+            ->and( OrderTimelineEntry::query()->where( 'order_id', $order->id )->where( 'event_type', 'paypal.refund_not_recorded' )->exists() )->toBeFalse();
+    } );
+
+    it( 'notes a failed store refund PayPal completed for a different amount', function (): void {
+        $order  = webhookPaidOrder();
+        $failed = Refund::query()->create( [ 'order_id' => $order->id, 'amount' => 1500, 'currency' => 'USD', 'status' => Refund::STATUS_FAILED ] );
+        $this->paypal->respond( 'payments.refunds.get', Orders::body( 'payments/refund', [ 'custom_id' => (string) $failed->id, 'invoice_id' => 'refund-' . $failed->id ] ) );
+
+        Webhooks::post( $this, 'PAYMENT.CAPTURE.REFUNDED', Webhooks::refund() )->assertOk();
+
+        expect( $failed->fresh()->status )->toBe( Refund::STATUS_FAILED )
+            ->and( $order->fresh()->total_refunded_amount )->toBe( 0 )
+            ->and( OrderTimelineEntry::query()->where( 'order_id', $order->id )->where( 'event_type', 'paypal.refund_not_recorded' )->exists() )->toBeTrue()
+            ->and( OrderTimelineEntry::query()->where( 'order_id', $order->id )->where( 'event_type', 'paypal.refund_settled' )->exists() )->toBeFalse();
     } );
 
     it( 'records a refund once when PayPal sends it under two event ids', function (): void {
@@ -377,6 +417,164 @@ describe( 'pending captures', function (): void {
             ->and( OrderTimelineEntry::query()->where( 'event_type', 'paypal.capture_denied' )->count() )->toBe( 1 )
             ->and( $denied )->toBe( [ [ $order->id, Orders::CAPTURE_ID, 'DENIED' ] ] );
     } );
+
+    it( 'fails the order\'s payment, and leaves its status alone, when a pending capture is denied', function (): void {
+        $order  = webhookPaidOrder( 'paypal', [ 'capture_status' => 'PENDING' ] );
+        $status = $order->status;
+        $failed = [];
+        addAction( 'ap.ecommerce.payment.failed', function ( mixed $gateway, Throwable $reason, Order $order ) use ( &$failed ): void {
+            $failed[] = [ $order->id, $reason->getMessage() ];
+        } );
+        respondToWebhookCalls( $this->paypal, 'payments.captures.get', Orders::body( 'payments/capture', [ 'status' => 'DENIED' ] ) );
+
+        Webhooks::post( $this, 'PAYMENT.CAPTURE.DENIED', Webhooks::capture( 'DENIED' ), 'WH-DENIED-1' )->assertOk();
+        Webhooks::post( $this, 'PAYMENT.CAPTURE.DENIED', Webhooks::capture( 'DENIED' ), 'WH-DENIED-2' )->assertOk();
+
+        $entry = OrderTimelineEntry::query()->where( 'order_id', $order->id )->where( 'event_type', 'payment.capture_failed' )->sole();
+
+        expect( $order->fresh()->payment_status )->toBe( 'failed' )
+            ->and( $order->fresh()->status )->toBe( $status )
+            ->and( $entry->payload )->toMatchArray( [ 'reference' => Orders::CAPTURE_ID, 'code' => 'capture_denied', 'message' => 'PayPal denied the pending payment.', 'source' => 'provider' ] )
+            ->and( OrderTimelineEntry::query()->where( 'order_id', $order->id )->where( 'event_type', 'paypal.capture_denied' )->count() )->toBe( 1 )
+            ->and( OrderNote::query()->where( 'order_id', $order->id )->count() )->toBe( 1 )
+            ->and( $failed )->toBe( [ [ $order->id, 'PayPal denied the pending payment.' ] ] );
+    } );
+
+    it( 'reports a captureDenied listener that throws, and records the denial once', function (): void {
+        Exceptions::fake();
+        $order = webhookPaidOrder( 'paypal', [ 'capture_status' => 'PENDING' ] );
+        $calls = 0;
+        addAction( CaptureEventHandler::DENIED_HOOK, function () use ( &$calls ): void {
+            $calls++;
+
+            throw new RuntimeException( 'listener failed' );
+        } );
+        respondToWebhookCalls( $this->paypal, 'payments.captures.get', Orders::body( 'payments/capture', [ 'status' => 'DENIED' ] ) );
+        $event = [ 'id' => 'WH-DENIED', 'event_type' => 'PAYMENT.CAPTURE.DENIED', 'resource' => [ 'id' => Orders::CAPTURE_ID ] ];
+
+        ( new ProcessPayPalWebhook( $event ) )->handle( app( PayPalWebhookProcessor::class ) );
+        ( new ProcessPayPalWebhook( $event ) )->handle( app( PayPalWebhookProcessor::class ) );
+
+        expect( $calls )->toBe( 1 )
+            ->and( OrderNote::query()->where( 'order_id', $order->id )->count() )->toBe( 1 )
+            ->and( OrderTimelineEntry::query()->where( 'order_id', $order->id )->where( 'event_type', 'paypal.capture_denied' )->count() )->toBe( 1 )
+            ->and( $order->fresh()->payment_status )->toBe( 'failed' );
+
+        Exceptions::assertReported( fn ( RuntimeException $exception ): bool => 'listener failed' === $exception->getMessage() );
+    } );
+
+    it( 'still fires captureDenied when an engine PaymentFailed listener throws', function (): void {
+        Exceptions::fake();
+        $order  = webhookPaidOrder( 'paypal', [ 'capture_status' => 'PENDING' ] );
+        $denied = 0;
+        Event::listen( PaymentFailed::class, function (): void {
+            throw new RuntimeException( 'payment.failed listener broke' );
+        } );
+        addAction( CaptureEventHandler::DENIED_HOOK, function () use ( &$denied ): void {
+            $denied++;
+        } );
+        respondToWebhookCalls( $this->paypal, 'payments.captures.get', Orders::body( 'payments/capture', [ 'status' => 'DENIED' ] ) );
+        $event = [ 'id' => 'WH-DENIED-EVT', 'event_type' => 'PAYMENT.CAPTURE.DENIED', 'resource' => [ 'id' => Orders::CAPTURE_ID ] ];
+
+        ( new ProcessPayPalWebhook( $event ) )->handle( app( PayPalWebhookProcessor::class ) );
+
+        expect( $denied )->toBe( 1 )
+            ->and( $order->fresh()->payment_status )->toBe( 'failed' );
+
+        Exceptions::assertReported( fn ( RuntimeException $exception ): bool => 'payment.failed listener broke' === $exception->getMessage() );
+    } );
+
+    it( 'keeps a completed capture completed when PAYMENT.CAPTURE.PENDING is processed after it', function (): void {
+        $order = webhookPaidOrder();
+        $this->paypal->respond( 'payments.captures.get', 'payments/capture-pending' );
+
+        Webhooks::post( $this, 'PAYMENT.CAPTURE.PENDING', Webhooks::capture( 'PENDING' ) )->assertOk();
+
+        expect( PayPalOrderMeta::get( $order->fresh(), 'capture_status' ) )->toBe( 'COMPLETED' )
+            ->and( OrderTimelineEntry::query()->where( 'order_id', $order->id )->where( 'event_type', 'paypal.capture_pending' )->exists() )->toBeFalse();
+    } );
+
+    it( 'records a completion that arrives before the store recorded the capture', function (): void {
+        $order = Orders::create( [ 'payment_gateway_key' => 'paypal', 'payment_status' => 'paid' ], [ 'order_id' => Orders::ORDER_ID ] );
+
+        Webhooks::post( $this, 'PAYMENT.CAPTURE.COMPLETED', Webhooks::capture() )->assertOk();
+
+        expect( PayPalOrderMeta::get( $order->fresh(), 'capture_id' ) )->toBe( Orders::CAPTURE_ID )
+            ->and( PayPalOrderMeta::get( $order->fresh(), 'capture_status' ) )->toBe( 'COMPLETED' )
+            ->and( OrderTimelineEntry::query()->where( 'order_id', $order->id )->where( 'event_type', 'paypal.capture_completed' )->count() )->toBe( 1 );
+    } );
+
+    it( 'records a denial that arrives before the store recorded the capture', function (): void {
+        $order  = Orders::create( [ 'payment_gateway_key' => 'paypal', 'payment_status' => 'paid' ], [ 'order_id' => Orders::ORDER_ID ] );
+        $denied = [];
+        addAction( CaptureEventHandler::DENIED_HOOK, function ( Order $order, string $captureId, string $status ) use ( &$denied ): void {
+            $denied[] = [ $order->id, $captureId, $status ];
+        } );
+        respondToWebhookCalls( $this->paypal, 'payments.captures.get', Orders::body( 'payments/capture', [ 'status' => 'DENIED' ] ) );
+
+        Webhooks::post( $this, 'PAYMENT.CAPTURE.DENIED', Webhooks::capture( 'DENIED' ) )->assertOk();
+
+        expect( PayPalOrderMeta::get( $order->fresh(), 'capture_id' ) )->toBe( Orders::CAPTURE_ID )
+            ->and( PayPalOrderMeta::get( $order->fresh(), 'capture_status' ) )->toBe( 'DENIED' )
+            ->and( OrderNote::query()->where( 'order_id', $order->id )->sole()->body )->toContain( Orders::CAPTURE_ID )
+            ->and( $denied )->toBe( [ [ $order->id, Orders::CAPTURE_ID, 'DENIED' ] ] )
+            ->and( $order->fresh()->payment_status )->toBe( 'failed' );
+    } );
+} );
+
+describe( 'voided authorizations', function (): void {
+    it( 'records an authorization PayPal voided on a placed order, so the lifecycle skips it', function (): void {
+        $order = Orders::create( [ 'payment_gateway_key' => 'paypal', 'payment_status' => 'paid' ], [
+            'order_id'      => Orders::ORDER_ID,
+            'intent'        => 'authorize',
+            'authorization' => [
+                'id'            => Orders::AUTHORIZATION_ID,
+                'status'        => 'CREATED',
+                'created_at'    => '2026-11-09T12:05:00+00:00',
+                'authorized_at' => '2026-11-09T12:05:00+00:00',
+                'expires_at'    => '2026-12-08T12:05:00+00:00',
+            ],
+        ] );
+        respondToWebhookCalls( $this->paypal, 'payments.authorizations.get', Orders::body( 'payments/authorization-voided' ) );
+
+        Webhooks::post( $this, 'PAYMENT.AUTHORIZATION.VOIDED', [ 'id' => Orders::AUTHORIZATION_ID, 'status' => 'VOIDED' ], 'WH-VOID-1' )->assertOk();
+        Webhooks::post( $this, 'PAYMENT.AUTHORIZATION.VOIDED', [ 'id' => Orders::AUTHORIZATION_ID, 'status' => 'VOIDED' ], 'WH-VOID-2' )->assertOk();
+
+        $fresh = $order->fresh();
+
+        expect( PayPalOrderMeta::get( $fresh, 'authorization.status' ) )->toBe( 'VOIDED' )
+            ->and( PayPalOrderMeta::get( $fresh, 'authorization.expires_at' ) )->toBe( '2026-12-08T12:05:00+00:00' )
+            ->and( OrderTimelineEntry::query()->where( 'order_id', $order->id )->where( 'event_type', 'paypal.authorization_voided' )->sole()->payload )->toBe( [ 'authorization_id' => Orders::AUTHORIZATION_ID ] )
+            ->and( OrderNote::query()->where( 'order_id', $order->id )->sole()->body )->toContain( Orders::AUTHORIZATION_ID )
+            ->and( $fresh->payment_status )->toBe( 'paid' )
+            ->and( app( AuthorizationLifecycle::class )->process( $fresh, CarbonImmutable::parse( '2026-11-13T12:00:00Z' ) ) )->toBe( [] );
+    } );
+
+    it( 'ignores a voided authorization that is not the order\'s', function (): void {
+        $order = Orders::create( [ 'payment_gateway_key' => 'paypal', 'payment_status' => 'paid' ], [
+            'order_id'      => Orders::ORDER_ID,
+            'authorization' => [ 'id' => 'OTHER-AUTHORIZATION', 'status' => 'CREATED' ],
+        ] );
+        $this->paypal->respond( 'payments.authorizations.get', Orders::body( 'payments/authorization-voided' ) );
+        $this->paypal->respond( 'payments.authorizations.get', Orders::body( 'payments/authorization-voided' ) );
+
+        Webhooks::post( $this, 'PAYMENT.AUTHORIZATION.VOIDED', [ 'id' => Orders::AUTHORIZATION_ID, 'status' => 'VOIDED' ] )->assertOk();
+
+        expect( PayPalOrderMeta::get( $order->fresh(), 'authorization.status' ) )->toBe( 'CREATED' )
+            ->and( OrderTimelineEntry::query()->where( 'order_id', $order->id )->count() )->toBe( 0 );
+    } );
+
+    it( 'ignores an authorization PayPal does not confirm was voided', function (): void {
+        $order = Orders::create( [ 'payment_gateway_key' => 'paypal', 'payment_status' => 'paid' ], [
+            'order_id'      => Orders::ORDER_ID,
+            'authorization' => [ 'id' => Orders::AUTHORIZATION_ID, 'status' => 'CREATED' ],
+        ] );
+
+        Webhooks::post( $this, 'PAYMENT.AUTHORIZATION.VOIDED', [ 'id' => Orders::AUTHORIZATION_ID, 'status' => 'VOIDED' ] )->assertOk();
+
+        expect( PayPalOrderMeta::get( $order->fresh(), 'authorization.status' ) )->toBe( 'CREATED' )
+            ->and( OrderNote::query()->where( 'order_id', $order->id )->count() )->toBe( 0 );
+    } );
 } );
 
 describe( 'queueing', function (): void {
@@ -387,6 +585,34 @@ describe( 'queueing', function (): void {
         Webhooks::post( $this, 'PAYMENT.CAPTURE.REFUNDED', Webhooks::refund() )->assertOk();
 
         Queue::assertPushedOn( 'webhooks', ProcessPayPalWebhook::class, fn ( ProcessPayPalWebhook $job ): bool => 'PAYMENT.CAPTURE.REFUNDED' === $job->event['event_type'] );
+    } );
+
+    it( 'retries for 24 hours, backing off to an hour', function (): void {
+        $job = new ProcessPayPalWebhook( [ 'id' => 'WH-1', 'event_type' => 'PAYMENT.CAPTURE.REFUNDED', 'resource' => [ 'id' => 'R-1' ] ] );
+
+        expect( CarbonImmutable::instance( $job->retryUntil() )->diffInMinutes( now()->addHours( 24 ) ) )->toBeLessThan( 1 )
+            ->and( $job->backoff )->toBe( [ 30, 120, 600, 1800, 3600 ] );
+    } );
+
+    it( 'logs a job that gave up with the event and PayPal debug ids', function (): void {
+        config( [
+            'artisanpack.ecommerce-paypal.logging.channel' => 'paypal-webhook-job-test',
+            'logging.channels.paypal-webhook-job-test'     => [ 'driver' => 'monolog', 'handler' => TestHandler::class ],
+        ] );
+        $job = new ProcessPayPalWebhook( [ 'id' => 'WH-GAVE-UP', 'event_type' => 'PAYMENT.CAPTURE.REFUNDED', 'resource' => [ 'id' => 'R-1' ] ] );
+
+        $job->failed( new PayPalApiException( 'PayPal is down.', 503, 'INTERNAL_SERVER_ERROR', debugId: 'debug-123' ) );
+
+        $records = Log::channel( 'paypal-webhook-job-test' )->getLogger()->getHandlers()[0]->getRecords();
+
+        expect( $records )->toHaveCount( 1 )
+            ->and( $records[0]->level->getName() )->toBe( 'ERROR' )
+            ->and( $records[0]->context )->toMatchArray( [
+                'event_id'    => 'WH-GAVE-UP',
+                'event_type'  => 'PAYMENT.CAPTURE.REFUNDED',
+                'resource_id' => 'R-1',
+                'debug_id'    => 'debug-123',
+            ] );
     } );
 
     it( 'retries when PayPal cannot be reached', function (): void {

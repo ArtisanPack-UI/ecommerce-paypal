@@ -193,6 +193,18 @@ describe( 'verify-credentials', function (): void {
         $this->paypal->assertSentCount( 'webhooks.get', 2 );
     } );
 
+    it( 'checks every webhook id when they are configured as an array', function (): void {
+        config( [ 'artisanpack.ecommerce-paypal.webhook_id' => [ '0EH40505U7160970P', 'WH-2' ] ] );
+        $this->paypal->respond( 'webhooks.get', 'webhooks/webhook' );
+        $this->paypal->error( 'webhooks.get', 'resource-not-found' );
+
+        $this->artisan( 'ecommerce-paypal:verify-credentials' )
+            ->expectsOutputToContain( 'not found at PayPal in sandbox mode' )
+            ->assertFailed();
+
+        expect( array_map( fn ( Request $request ): string => basename( parse_url( $request->url(), PHP_URL_PATH ) ), $this->paypal->sent( 'webhooks.get' ) ) )->toBe( [ '0EH40505U7160970P', 'WH-2' ] );
+    } );
+
     it( 'checks the Apple Pay domain file when Apple Pay is on', function ( int $status, string $body, bool $passes, array $headers = [] ): void {
         config( [ 'artisanpack.ecommerce-paypal.methods.apple_pay.enabled' => true ] );
         $this->paypal->respond( 'webhooks.get', matchingWebhook() );
@@ -300,6 +312,15 @@ describe( 'webhooks:register', function (): void {
             && SPEC_WEBHOOK_EVENTS === array_column( $request->data()[0]['value'], 'name' )
             && 'https://shop.test/ecommerce/webhooks/paypal' === ( $request->data()[1]['value'] ?? null ) );
         $this->paypal->assertNotSent( 'webhooks.create' );
+    } );
+
+    it( 'accepts the printed id from a webhook id array', function (): void {
+        config( [ 'artisanpack.ecommerce-paypal.webhook_id' => [ 'WH-1', '0EH40505U7160970P' ] ] );
+        $this->paypal->respond( 'webhooks.list', [ 'webhooks' => [] ] );
+
+        $this->artisan( 'ecommerce-paypal:webhooks:register' )
+            ->doesntExpectOutputToContain( 'Set PAYPAL_WEBHOOK_ID to this id' )
+            ->assertSuccessful();
     } );
 
     it( 'warns when the printed id is not configured yet', function (): void {

@@ -179,20 +179,23 @@ final class PayPalWebhooks
      * @since 1.0.0
      *
      * @param  string  $gatewayKey  Gateway key.
+     * @param  string  $currency    Cart currency.
+     * @param  int     $price       The product's price, in minor units.
+     * @param  int     $shipping    The shipping rate, in minor units of `$currency`.
      *
      * @return Cart
      */
-    public static function pendingCart( string $gatewayKey ): Cart
+    public static function pendingCart( string $gatewayKey, string $currency = 'USD', int $price = 2_000, int $shipping = 500 ): Cart
     {
         $product = Product::factory()->create();
-        ProductPrice::factory()->forPriceable( $product )->create( [ 'currency' => 'USD', 'price_amount' => 2_000 ] );
+        ProductPrice::factory()->forPriceable( $product )->create( [ 'currency' => $currency, 'price_amount' => $price ] );
 
         $zone = ShippingZone::factory()->create( [ 'name' => 'US', 'country_codes' => [ 'US' ] ] );
-        ShippingMethod::factory()->create( [ 'zone_id' => $zone->id, 'key' => 'flat-rate', 'label' => 'Standard', 'config' => [ 'amount' => 500 ], 'position' => 0 ] );
+        ShippingMethod::factory()->create( [ 'zone_id' => $zone->id, 'key' => 'flat-rate', 'label' => 'Standard', 'config' => [ 'amount' => 'USD' === $currency ? $shipping : [ $currency => $shipping ] ], 'position' => 0 ] );
 
         $carts    = app( StorefrontCartService::class );
         $checkout = app( CheckoutService::class );
-        $cart     = $carts->create( 'USD' );
+        $cart     = $carts->create( $currency );
 
         $carts->addItem( $cart, $product->id, null, 1 );
         $checkout->setEmail( $cart, 'ada@example.test' );

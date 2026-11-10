@@ -173,6 +173,26 @@ class PayPalWalletGateway extends PayPalGateway implements SharesWebhookEndpoint
     }
 
     /**
+     * PayPal and Venmo, plus `card` while card fields are switched off
+     * (the buttons then show PayPal's own guest-card button; with card
+     * fields on, cards are paid through `paypal-card`).
+     *
+     * @since 1.0.0
+     *
+     * @return array<int, string>
+     */
+    protected function acceptedSources(): array
+    {
+        $sources = [ 'paypal', 'venmo' ];
+
+        if ( ! (bool) config( 'artisanpack.ecommerce-paypal.methods.card.enabled', false ) ) {
+            $sources[] = 'card';
+        }
+
+        return $sources;
+    }
+
+    /**
      * The buttons' style and the Pay Later and Venmo switches.
      *
      * @since 1.0.0

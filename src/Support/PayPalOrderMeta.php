@@ -16,6 +16,7 @@ declare( strict_types=1 );
 namespace ArtisanPackUI\EcommercePayPal\Support;
 
 use ArtisanPackUI\Ecommerce\Models\Order;
+use ArtisanPackUI\EcommercePayPal\Api\Data\PayPalCapture;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -25,6 +26,10 @@ use Illuminate\Support\Facades\DB;
  * Writes merge into the stored row under a row lock, so they never clobber
  * meta the engine wrote in between (the finalize claim, the capture
  * reference). An order that isn't saved yet is updated in memory only.
+ *
+ * A capture that settled (see {@see self::SETTLED_CAPTURE_STATES}) never
+ * goes back to `PENDING`: a merge that would record `PENDING` for the
+ * capture the order already settled keeps the settled status.
  *
  * @package    ArtisanPack_UI
  * @subpackage EcommercePayPal
@@ -41,6 +46,24 @@ final class PayPalOrderMeta
      * @var string
      */
     public const KEY = 'paypal';
+
+    /**
+     * Capture statuses a capture never leaves for `PENDING`.
+     *
+     * @since 1.0.0
+     *
+     * @var array<int, string>
+     */
+    public const SETTLED_CAPTURE_STATES = [ 'COMPLETED', 'DECLINED', 'DENIED', 'FAILED', 'PARTIALLY_REFUNDED', 'REFUNDED' ];
+
+    /**
+     * Capture statuses a pending capture can settle to.
+     *
+     * @since 1.0.0
+     *
+     * @var array<int, string>
+     */
+    public const FINAL_CAPTURE_STATES = [ 'COMPLETED', 'DECLINED', 'DENIED', 'FAILED' ];
 
     /**
      * A value from `orders.meta.paypal` by dot path, or `$default`.
@@ -142,6 +165,95 @@ final class PayPalOrderMeta
     }
 
     /**
+     * Moves the order's recorded capture to `$capture`'s status, as PayPal
+     * reported it, under the order's row lock.
+     *
+     * - A different capture than the one the order recorded changes nothing.
+     * - The recorded status is open while it is null or `PENDING`; a settled
+     *   capture never changes (in particular, never back to `PENDING`).
+     * - `PENDING` records the capture id, status, and pending reason, and
+     *   returns `'pending'` only when that changed something.
+     * - `COMPLETED`, `DECLINED`, `DENIED`, or `FAILED` records the capture id
+     *   (when the order had none yet) and the status, and returns
+     *   `'completed'` or `'denied'`.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order          $order    Order.
+     * @param  PayPalCapture  $capture  The capture, fetched from PayPal.
+     *
+     * @return string|null `'pending'`, `'completed'`, `'denied'`, or null when nothing changed.
+     */
+    public static function transitionCapture( Order $order, PayPalCapture $capture ): ?string
+    {
+        $fetched = (string) $capture->status();
+
+        if ( '' === $capture->id() || ( 'PENDING' !== $fetched && ! in_array( $fetched, self::FINAL_CAPTURE_STATES, true ) ) ) {
+            return null;
+        }
+
+        $decide = static function ( array $meta ) use ( $capture, $fetched ): ?array {
+            $paypal   = is_array( $meta[ self::KEY ] ?? null ) ? $meta[ self::KEY ] : [];
+            $recorded = isset( $paypal['capture_id'] ) && '' !== (string) $paypal['capture_id'] ? (string) $paypal['capture_id'] : null;
+            $status   = isset( $paypal['capture_status'] ) && '' !== (string) $paypal['capture_status'] ? (string) $paypal['capture_status'] : null;
+
+            if ( ( null !== $recorded && $recorded !== $capture->id() ) || ( null !== $status && 'PENDING' !== $status ) ) {
+                return null;
+            }
+
+            if ( 'PENDING' === $fetched ) {
+                $values = [ 'capture_id' => $capture->id(), 'capture_status' => 'PENDING', 'pending_reason' => $capture->pendingReason() ];
+
+                if ( $recorded === $capture->id() && 'PENDING' === $status && ( $paypal['pending_reason'] ?? null ) === $values['pending_reason'] ) {
+                    return null;
+                }
+
+                $transition = 'pending';
+            } else {
+                $values     = [ 'capture_id' => $capture->id(), 'capture_status' => $fetched, 'pending_reason' => null ];
+                $transition = 'COMPLETED' === $fetched ? 'completed' : 'denied';
+            }
+
+            $meta[ self::KEY ] = array_replace( $paypal, $values );
+
+            return [ $meta, $transition ];
+        };
+
+        if ( ! $order->exists || null === $order->getKey() ) {
+            $result = $decide( (array) ( $order->getAttribute( 'meta' ) ?? [] ) );
+
+            if ( null !== $result ) {
+                $order->setAttribute( 'meta', $result[0] );
+            }
+
+            return $result[1] ?? null;
+        }
+
+        $result = DB::transaction( static function () use ( $order, $decide ): ?array {
+            $locked = Order::query()->lockForUpdate()->find( $order->getKey() );
+            $result = null === $locked ? null : $decide( (array) ( $locked->getAttribute( 'meta' ) ?? [] ) );
+
+            if ( null === $result ) {
+                return null;
+            }
+
+            $locked->meta = $result[0];
+            $locked->save();
+
+            return $result;
+        } );
+
+        if ( null === $result ) {
+            return null;
+        }
+
+        $order->setAttribute( 'meta', $result[0] );
+        $order->syncOriginalAttribute( 'meta' );
+
+        return $result[1];
+    }
+
+    /**
      * Records that the order processed webhook event `$eventId`, keeping the
      * latest `$limit` ids in `orders.meta.paypal.webhook_events`. Checked and
      * written under the order's row lock.
@@ -206,55 +318,6 @@ final class PayPalOrderMeta
     }
 
     /**
-     * Forgets that the order processed webhook event `$eventId`, so it is
-     * processed again on retry.
-     *
-     * @since 1.0.0
-     *
-     * @param  Order   $order    Order.
-     * @param  string  $eventId  Event id.
-     *
-     * @return void
-     */
-    public static function forgetEvent( Order $order, string $eventId ): void
-    {
-        $forget = static function ( array $meta ) use ( $eventId ): array {
-            $paypal                   = is_array( $meta[ self::KEY ] ?? null ) ? $meta[ self::KEY ] : [];
-            $paypal['webhook_events'] = array_values( array_filter(
-                (array) ( $paypal['webhook_events'] ?? [] ),
-                static fn ( mixed $seen ): bool => $seen !== $eventId,
-            ) );
-            $meta[ self::KEY ] = $paypal;
-
-            return $meta;
-        };
-
-        if ( ! $order->exists || null === $order->getKey() ) {
-            $order->setAttribute( 'meta', $forget( (array) ( $order->getAttribute( 'meta' ) ?? [] ) ) );
-
-            return;
-        }
-
-        $meta = DB::transaction( static function () use ( $order, $forget ): ?array {
-            $locked = Order::query()->lockForUpdate()->find( $order->getKey() );
-
-            if ( null === $locked ) {
-                return null;
-            }
-
-            $locked->meta = $forget( (array) ( $locked->getAttribute( 'meta' ) ?? [] ) );
-            $locked->save();
-
-            return $locked->meta;
-        } );
-
-        if ( null !== $meta ) {
-            $order->setAttribute( 'meta', $meta );
-            $order->syncOriginalAttribute( 'meta' );
-        }
-    }
-
-    /**
      * `$meta` with `$values` merged into its PayPal namespace.
      *
      * @since 1.0.0
@@ -275,6 +338,14 @@ final class PayPalOrderMeta
 
         if ( null !== $paypalOrderId && '' !== $paypalOrderId ) {
             $values['order_id'] = $paypalOrderId;
+        }
+
+        if ( 'PENDING' === ( $values['capture_status'] ?? null )
+            && in_array( $current['capture_status'] ?? null, self::SETTLED_CAPTURE_STATES, true )
+            && ( ! isset( $values['capture_id'] ) || (string) $values['capture_id'] === (string) ( $current['capture_id'] ?? '' ) ) ) {
+            // A webhook already settled this capture: a pending response
+            // read before it doesn't take it back to PENDING.
+            unset( $values['capture_status'], $values['pending_reason'] );
         }
 
         $meta[ self::KEY ] = array_replace_recursive( $current, $values );

@@ -22,8 +22,9 @@ use Throwable;
 
 /**
  * A saved payment method can't be used to pay (spec §10.2): it isn't the
- * shopper's, it was removed, or PayPal reported the vaulted token invalid
- * (in which case it has been soft-deleted locally).
+ * shopper's, it was removed, PayPal declined it (it is kept), or PayPal
+ * reported the vaulted token invalid (in which case it has been
+ * soft-deleted locally).
  *
  * The message is translated and safe to show the shopper. It is a
  * {@see CheckoutException} on the `payment_options` field, so the engine's
@@ -111,5 +112,19 @@ class PayPalSavedMethodException extends CheckoutException
     public static function invalid( PayPalPaymentToken $token, ?PayPalApiException $previous = null ): self
     {
         return new self( __( 'That saved card can no longer be used, so we removed it. Choose another card or enter a new one.' ), $token, $previous, self::INVALID );
+    }
+
+    /**
+     * PayPal declined the saved card but still holds it, so it was kept.
+     *
+     * @since 1.0.0
+     *
+     * @param  PayPalApiException|null  $previous  PayPal's error.
+     *
+     * @return self
+     */
+    public static function declined( ?PayPalApiException $previous = null ): self
+    {
+        return new self( __( 'This card was declined. Choose another payment method.' ), null, $previous, self::UNAVAILABLE );
     }
 }

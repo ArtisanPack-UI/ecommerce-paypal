@@ -92,6 +92,33 @@ describe( 'rendering', function (): void {
             ->and( $component->viewData( 'paypal' )['config'] )->toMatchArray( [ 'publishable_key' => 'client-id', 'client_secret' => Orders::ORDER_ID ] );
     } );
 
+    it( 'returns focus to the placed order\'s heading first, then the payment step\'s', function (): void {
+        $component = Livewire::test( PayPalButtons::class, paypalButtonsProps() );
+        $script    = implode( "\n", (array) ( $component->effects['scripts'] ?? [] ) );
+
+        expect( $component->viewData( 'paypal' )['heading'] )->toBe( [ 'ec-checkout-placement-heading', 'ec-checkout-step-payment' ] )
+            ->and( $script )->toContain( '[].concat( settings.heading )' );
+    } );
+
+    it( 'reports SDK errors with its own message and ineligibility politely, once', function (): void {
+        $component = Livewire::test( PayPalButtons::class, paypalButtonsProps() );
+        $script    = implode( "\n", (array) ( $component->effects['scripts'] ?? [] ) );
+
+        expect( $script )->toContain( 'onError: () => $wire.fail( settings.messages.failed )' )
+            ->toContain( 'announce( statusBox, settings.messages.ineligible )' )
+            ->toContain( 'quiet = true' )
+            ->not->toContain( "\$wire.fail( '' )" );
+    } );
+
+    it( 'clears its status when a confirmed payment goes nowhere or its request fails', function (): void {
+        $component = Livewire::test( PayPalButtons::class, paypalButtonsProps() );
+        $script    = implode( "\n", (array) ( $component->effects['scripts'] ?? [] ) );
+
+        expect( $script )->toContain( "\$wire.\$hook( 'request'" )
+            ->toContain( 'awaitingOutcome = true' )
+            ->toContain( 'statusBox.textContent = \'\'' );
+    } );
+
     it( 'tells the buyer to pick another funding source after a decline', function (): void {
         Livewire::test( PayPalButtons::class, paypalButtonsProps( [ 'restart' => true ] ) )
             ->assertSeeHtml( 'data-paypal-restart' )

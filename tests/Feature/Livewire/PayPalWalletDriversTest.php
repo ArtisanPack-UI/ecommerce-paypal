@@ -97,7 +97,11 @@ it( 'renders the wallet button slot and mounts it through the shared module', fu
         ->and( $script )->toContain( 'paypal[ settings.mount ]' )
         ->toContain( 'container.hidden = true' )
         ->toContain( '$wire.fail( settings.messages.ineligible )' )
-        ->toContain( '$wire.confirm( data?.orderID' );
+        ->toContain( '$wire.confirm( data?.orderID' )
+        ->toContain( 'onError: () => $wire.fail( settings.messages.failed )' )
+        ->toContain( "\$wire.\$hook( 'request'" )
+        ->not->toContain( "\$wire.fail( '' )" )
+        ->and( $component->viewData( 'paypal' )['heading'] )->toBe( [ 'ec-checkout-placement-heading', 'ec-checkout-step-payment' ] );
 } )->with( 'wallets' );
 
 it( 'labels the sheet total with the app name without a brand name', function ( string $class, string $key ): void {

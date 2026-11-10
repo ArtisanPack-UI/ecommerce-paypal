@@ -21,6 +21,7 @@ use ArtisanPackUI\EcommercePayPal\Gateways\PayPalCardGateway;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalWalletGateway;
 use ArtisanPackUI\EcommercePayPal\Models\PayPalCustomer;
 use ArtisanPackUI\EcommercePayPal\Models\PayPalPaymentToken;
+use ArtisanPackUI\EcommercePayPal\Support\PayPalRedactor;
 use ArtisanPackUI\EcommercePayPal\Vault\PayPalVault;
 use Illuminate\Support\Facades\Log;
 
@@ -99,7 +100,7 @@ class VaultEventHandler extends WebhookEventHandler
             $this->client->vault()->getPaymentToken( $tokenId );
 
             // PayPal still has it: not a real deletion.
-            Log::channel( self::logChannel() )->warning( 'Ignored a PayPal vault deletion event for a token PayPal still has.', [ 'token_id' => $tokenId ] );
+            Log::channel( self::logChannel() )->warning( 'Ignored a PayPal vault deletion event for a token PayPal still has.', [ 'token_id' => PayPalRedactor::MASK ] );
 
             return;
         } catch ( PayPalApiException $exception ) {

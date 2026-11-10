@@ -28,6 +28,7 @@ reviews:
     - "!vendor/**"
 
     # 2. Build Artifacts (Vite/Laravel)
+    - "!dist/**"
     - "!public/build/**"
     - "!public/hot"
     - "!public/storage"

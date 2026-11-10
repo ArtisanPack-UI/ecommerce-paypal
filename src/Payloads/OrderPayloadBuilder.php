@@ -35,11 +35,13 @@ use Throwable;
  * §7.1).
  *
  * The engine's totals are the source of truth. Line items and the amount
- * breakdown are converted with {@see PayPalMoney}, and any difference
- * PayPal's decimal rules introduce (HUF and TWD are sent whole) is moved
- * into `discount` / `shipping_discount` or `handling`, so the breakdown
- * always adds up to `amount.value` and `amount.value` always equals the
- * engine total.
+ * breakdown are converted with {@see PayPalMoney}, and any rounding drift
+ * PayPal's decimal rules introduce between them (HUF and TWD are sent
+ * whole) is moved into `discount` / `shipping_discount` or `handling`, so
+ * the breakdown always adds up to `amount.value`. The **total** itself must
+ * already be whole in PayPal's units ({@see PayPalMoney::isExact()}): the
+ * gateways aren't offered for a HUF or TWD total with a fraction, so
+ * `amount.value` equals the engine total.
  *
  * The body goes through the `ap.ecommerce.paypal.orderPayload` filter
  * `(array $payload, Cart $cart, PayPalGateway $gateway)` before it is
@@ -103,7 +105,9 @@ class OrderPayloadBuilder
      *
      * `$context` keys:
      * - `attempt` (int|string) — makes `invoice_id` unique per checkout
-     *   attempt (`cart-{id}-{attempt}`); a random suffix is used without it;
+     *   attempt (`cart-{id}-{attempt}`); the gateway derives it from the
+     *   request's `PayPal-Request-Id`, so a retried request carries the
+     *   same body. A random suffix is used without it;
      * - `return_url`, `cancel_url` (string) — where PayPal sends the buyer
      *   back; both default to the storefront's checkout return page, and
      *   `cancel_url` to `return_url` when only that is given;
@@ -177,6 +181,42 @@ class OrderPayloadBuilder
         }
 
         return $payload;
+    }
+
+    /**
+     * The shipping block for an engine address (a cart's or an order's
+     * `shipping_address`), as the Order body sends it. The gateway compares
+     * an approved Order against it before capture.
+     *
+     * @since 1.0.0
+     *
+     * @param  array<string, mixed>  $address  Engine address.
+     *
+     * @return array{type: string, name?: array{full_name: string}, address: array<string, string>}|null Null when the address isn't usable.
+     */
+    public function shippingFor( array $address ): ?array
+    {
+        $line1   = trim( (string) ( $address['address1'] ?? '' ) );
+        $country = strtoupper( trim( (string) ( $address['country_code'] ?? '' ) ) );
+
+        if ( '' === $line1 || 2 !== strlen( $country ) ) {
+            return null;
+        }
+
+        $name = trim( trim( (string) ( $address['first_name'] ?? '' ) ) . ' ' . trim( (string) ( $address['last_name'] ?? '' ) ) );
+
+        return array_filter( [
+            'type'    => 'SHIPPING',
+            'name'    => '' === $name ? null : [ 'full_name' => mb_substr( $name, 0, 300 ) ],
+            'address' => array_filter( [
+                'address_line_1' => mb_substr( $line1, 0, 300 ),
+                'address_line_2' => self::optional( $address, 'address2', 300 ),
+                'admin_area_2'   => self::optional( $address, 'city', 120 ),
+                'admin_area_1'   => self::optional( $address, 'region_code', 300 ) ?? self::optional( $address, 'region', 300 ),
+                'postal_code'    => self::optional( $address, 'postal_code', 60 ),
+                'country_code'   => $country,
+            ], static fn ( ?string $value ): bool => null !== $value ),
+        ], static fn ( mixed $value ): bool => null !== $value );
     }
 
     /**
@@ -299,28 +339,7 @@ class OrderPayloadBuilder
      */
     protected function shipping( Cart $cart ): ?array
     {
-        $address = (array) ( $cart->getAttribute( 'shipping_address' ) ?? [] );
-        $line1   = trim( (string) ( $address['address1'] ?? '' ) );
-        $country = strtoupper( trim( (string) ( $address['country_code'] ?? '' ) ) );
-
-        if ( '' === $line1 || 2 !== strlen( $country ) ) {
-            return null;
-        }
-
-        $name = trim( trim( (string) ( $address['first_name'] ?? '' ) ) . ' ' . trim( (string) ( $address['last_name'] ?? '' ) ) );
-
-        return array_filter( [
-            'type'    => 'SHIPPING',
-            'name'    => '' === $name ? null : [ 'full_name' => mb_substr( $name, 0, 300 ) ],
-            'address' => array_filter( [
-                'address_line_1' => mb_substr( $line1, 0, 300 ),
-                'address_line_2' => self::optional( $address, 'address2', 300 ),
-                'admin_area_2'   => self::optional( $address, 'city', 120 ),
-                'admin_area_1'   => self::optional( $address, 'region_code', 300 ) ?? self::optional( $address, 'region', 300 ),
-                'postal_code'    => self::optional( $address, 'postal_code', 60 ),
-                'country_code'   => $country,
-            ], static fn ( ?string $value ): bool => null !== $value ),
-        ], static fn ( mixed $value ): bool => null !== $value );
+        return $this->shippingFor( (array) ( $cart->getAttribute( 'shipping_address' ) ?? [] ) );
     }
 
     /**

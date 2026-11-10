@@ -413,7 +413,15 @@ final class PayPalFake
             $fixture = 'oauth/id-token';
         }
 
-        return Http::response( null === $fixture ? '' : self::fixture( $fixture ), $status );
+        $body = null === $fixture ? '' : self::fixture( $fixture );
+
+        // Like PayPal, a created Order carries the cart id it was created
+        // with, so the gateway's check that the Order is the cart's holds.
+        if ( 'orders.create' === $endpoint && is_array( $body ) && is_string( $request['purchase_units'][0]['custom_id'] ?? null ) ) {
+            $body['purchase_units'][0]['custom_id'] = $request['purchase_units'][0]['custom_id'];
+        }
+
+        return Http::response( $body, $status );
     }
 
     /**

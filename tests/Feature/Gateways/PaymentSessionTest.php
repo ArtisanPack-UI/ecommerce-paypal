@@ -11,6 +11,7 @@ use ArtisanPackUI\EcommercePayPal\Testing\PayPalFake;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Sleep;
 use Tests\Support\CartBuilder;
+use Tests\Support\PayPalTestOrders as Orders;
 
 beforeEach( function (): void {
     config( [
@@ -25,7 +26,7 @@ beforeEach( function (): void {
 } );
 
 describe( 'createPaymentSession', function (): void {
-    it( 'creates the PayPal Order with the engine idempotency key and returns a normalized session', function (): void {
+    it( 'creates the PayPal Order with a request id derived from the engine key and returns a normalized session', function (): void {
         $cart    = CartBuilder::make( [ [ 'Shirt', 10000, 1 ] ] );
         $session = app( PayPalWalletGateway::class )->createPaymentSession( $cart, [ 'idempotency_key' => 'idem-123' ] );
 
@@ -37,7 +38,7 @@ describe( 'createPaymentSession', function (): void {
             ->and( $session->redirectUrl )->toBe( 'https://www.sandbox.paypal.com/checkoutnow?token=5O190127TN364715T' )
             ->and( $session->clientSecret )->toBeNull();
 
-        $this->paypal->assertSent( 'orders.create', fn ( Request $request ): bool => 'idem-123' === $request->header( 'PayPal-Request-Id' )[0]
+        $this->paypal->assertSent( 'orders.create', fn ( Request $request ): bool => 'session-42-' . substr( hash( 'sha256', 'paypal|idem-123' ), 0, 40 ) === $request->header( 'PayPal-Request-Id' )[0]
             && 'return=representation' === $request->header( 'Prefer' )[0]
             && 'CAPTURE' === $request['intent']
             && '42' === $request['purchase_units'][0]['custom_id']
@@ -63,21 +64,89 @@ describe( 'createPaymentSession', function (): void {
             ->and( $session->status )->toBe( PaymentSession::STATUS_REQUIRES_PAYMENT_METHOD );
     } );
 
-    it( 'keeps a request id on the cart when the engine passes no key, so a retry returns the same Order', function (): void {
+    it( 'keeps a request id on the cart when the engine passes no key, so a create that got no answer is retried with it', function (): void {
+        $gateway = app( PayPalWalletGateway::class );
+        $cart    = CartBuilder::make( [ [ 'Shirt', 10000, 1 ] ] );
+
+        $this->paypal->timeout( 'orders.create' );
+
+        expect( fn () => $gateway->createPaymentSession( $cart ) )->toThrow( PayPalApiException::class );
+
+        $first = $cart->meta['paypal']['request_id'];
+
+        $gateway->createPaymentSession( $cart );
+
+        $sent = $this->paypal->sent( 'orders.create' );
+        $ids  = array_map( fn ( Request $request ): string => $request->header( 'PayPal-Request-Id' )[0], $sent );
+
+        expect( $first )->toBeString()->toMatch( '/^[0-9a-f-]{36}$/' )
+            ->and( $ids )->toBe( [ $first, $first ] )
+            ->and( $sent[1]['purchase_units'][0]['invoice_id'] )->toBe( $sent[0]['purchase_units'][0]['invoice_id'] )
+            ->and( $cart->meta['paypal']['request_order_id'] )->toBe( '5O190127TN364715T' );
+    } );
+
+    it( 'sends the same body for the same request id, deriving the invoice id from it', function (): void {
+        $gateway = app( PayPalWalletGateway::class );
+
+        $gateway->createPaymentSession( CartBuilder::make( [ [ 'Shirt', 10000, 1 ] ] ), [ 'idempotency_key' => 'same-key' ] );
+        $gateway->createPaymentSession( CartBuilder::make( [ [ 'Shirt', 10000, 1 ] ] ), [ 'idempotency_key' => 'same-key' ] );
+
+        $sent      = $this->paypal->sent( 'orders.create' );
+        $requestId = $sent[0]->header( 'PayPal-Request-Id' )[0];
+
+        expect( $sent[1]->header( 'PayPal-Request-Id' )[0] )->toBe( $requestId )
+            ->and( $sent[1]['purchase_units'][0]['invoice_id'] )->toBe( $sent[0]['purchase_units'][0]['invoice_id'] )
+            ->and( $sent[0]['purchase_units'][0]['invoice_id'] )->toBe( 'cart-42-' . substr( hash( 'sha256', $requestId ), 0, 10 ) );
+    } );
+
+    it( 'mints a new request id once the stored one produced an Order, even after the engine cleared the payment reference', function (): void {
         $gateway = app( PayPalWalletGateway::class );
         $cart    = CartBuilder::make( [ [ 'Shirt', 10000, 1 ] ] );
 
         $gateway->createPaymentSession( $cart );
         $first = $cart->meta['paypal']['request_id'];
 
+        // resetPayment(), or a switch to another gateway and back.
+        $cart->payment_reference = null;
         $gateway->createPaymentSession( $cart );
 
         $ids = array_map( fn ( Request $request ): string => $request->header( 'PayPal-Request-Id' )[0], $this->paypal->sent( 'orders.create' ) );
 
-        expect( $first )->toBeString()->toMatch( '/^[0-9a-f-]{36}$/' )
-            ->and( $ids )->toBe( [ $first, $first ] )
-            ->and( $cart->meta['paypal']['request_order_id'] )->toBe( '5O190127TN364715T' );
+        expect( $cart->meta['paypal']['request_id'] )->not->toBe( $first )
+            ->and( $ids )->toBe( [ $first, $cart->meta['paypal']['request_id'] ] );
     } );
+
+    it( 'scopes the request id to the cart and gateway, and keeps it within PayPal\'s 108 characters', function (): void {
+        $key = str_repeat( 'k', 255 );
+
+        app( PayPalWalletGateway::class )->createPaymentSession( CartBuilder::make( [ [ 'Shirt', 10000, 1 ] ] ), [ 'idempotency_key' => $key ] );
+        app( PayPalWalletGateway::class )->createPaymentSession( CartBuilder::make( [ [ 'Shirt', 10000, 1 ] ], [ 'id' => 43 ] ), [ 'idempotency_key' => $key ] );
+        app( PayPalCardGateway::class )->createPaymentSession( CartBuilder::make( [ [ 'Shirt', 10000, 1 ] ] ), [ 'idempotency_key' => $key ] );
+
+        $ids = array_map( fn ( Request $request ): string => $request->header( 'PayPal-Request-Id' )[0], $this->paypal->sent( 'orders.create' ) );
+
+        expect( array_unique( $ids ) )->toHaveCount( 3 );
+
+        foreach ( $ids as $id ) {
+            expect( strlen( $id ) )->toBeLessThanOrEqual( 108 )
+                ->and( $id )->not->toContain( $key );
+        }
+    } );
+
+    it( 'refuses an Order PayPal returns for another cart', function (): void {
+        $this->paypal->respond( 'orders.create', Orders::body( 'orders/created', [ 'purchase_units.0.custom_id' => '7' ] ) );
+
+        app( PayPalWalletGateway::class )->createPaymentSession( CartBuilder::make( [ [ 'Shirt', 10000, 1 ] ] ), [ 'idempotency_key' => 'k' ] );
+    } )->throws( UnexpectedValueException::class, 'PayPal returned an Order for another cart.' );
+
+    it( 'refuses a HUF or TWD total that is not whole before calling PayPal', function ( string $currency ): void {
+        $cart = CartBuilder::make( [ [ 'Lamp', 123450, 1 ] ], [ 'currency' => $currency ] );
+
+        expect( fn () => app( PayPalWalletGateway::class )->createPaymentSession( $cart, [ 'idempotency_key' => 'k' ] ) )
+            ->toThrow( RuntimeException::class, 'PayPal only accepts whole ' . $currency . ' amounts.' );
+
+        $this->paypal->assertNotSent( 'orders.create' );
+    } )->with( [ 'HUF', 'TWD' ] );
 
     it( 'mints a new request id when the cart total, currency, or gateway changes', function (): void {
         $cart = CartBuilder::make( [ [ 'Shirt', 10000, 1 ] ] );
@@ -168,6 +237,15 @@ describe( 'retrievePaymentSession', function (): void {
         $this->paypal->respond( 'orders.get', $order );
 
         expect( app( PayPalApplePayGateway::class )->retrievePaymentSession( $order['id'] )->metadata['liability_shift'] )->toBe( 'NO' );
+    } );
+
+    it( 'does not report a card Order captured without the liability shift the policy needs as paid', function (): void {
+        $this->paypal->respond( 'orders.get', Orders::body( 'orders/captured', [ 'payment_source' => [ 'card' => [ 'brand' => 'VISA', 'last_digits' => '1111', 'authentication_result' => [ 'liability_shift' => 'NO' ] ] ] ] ) );
+
+        $session = app( PayPalCardGateway::class )->retrievePaymentSession( '5O190127TN364715T' );
+
+        expect( $session->status )->toBe( PaymentSession::STATUS_PROCESSING )
+            ->and( $session->status )->not->toBe( PaymentSession::STATUS_SUCCEEDED );
     } );
 
     it( 'carries the capture id as the charge once captured', function (): void {

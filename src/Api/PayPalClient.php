@@ -345,6 +345,26 @@ class PayPalClient
     }
 
     /**
+     * Sends a read-only `POST` whose body is already-encoded JSON, sent
+     * byte for byte (signature verification, which needs the event exactly
+     * as PayPal delivered it). Auth, the single 401 refresh, retries, and
+     * redacted logging apply as for {@see self::postReadOnly()}.
+     *
+     * @since 1.0.0
+     *
+     * @param  string  $path  API path.
+     * @param  string  $json  JSON body, sent as is.
+     *
+     * @throws PayPalApiException On failure.
+     *
+     * @return array<string, mixed>
+     */
+    public function postRawReadOnly( string $path, string $json ): array
+    {
+        return $this->send( 'POST', $path, readOnly: true, rawBody: $json );
+    }
+
+    /**
      * Sends a mutating `PATCH` (a JSON Patch list).
      *
      * @since 1.0.0
@@ -391,6 +411,7 @@ class PayPalClient
      * @param  string|null              $requestId  `PayPal-Request-Id`; required for mutating methods.
      * @param  array<string, string>    $headers    Extra headers.
      * @param  bool                     $readOnly   Whether a `POST` changes nothing (no request id needed).
+     * @param  string|null              $rawBody    Already-encoded JSON body, sent as is instead of `$body`.
      *
      * @throws InvalidArgumentException When a mutating call has no request id.
      * @throws PayPalApiException       On failure.
@@ -405,6 +426,7 @@ class PayPalClient
         ?string $requestId = null,
         array $headers = [],
         bool $readOnly = false,
+        ?string $rawBody = null,
     ): array {
         $method = strtoupper( $method );
 
@@ -423,10 +445,10 @@ class PayPalClient
         $refreshed   = false;
 
         while ( true ) {
-            $this->logRequest( $method, $path, $headers, $body );
+            $this->logRequest( $method, $path, $headers, null === $rawBody ? $body : self::decodeForLog( $rawBody ) );
 
             try {
-                $response = $this->pending( $credentials, $headers, $query )->send( $method, $url, $this->options( $method, $body ) );
+                $response = $this->pending( $credentials, $headers, $query )->send( $method, $url, $this->options( $method, $body, $rawBody ) );
             } catch ( ConnectionException|PayPalApiException $exception ) {
                 // Both the call and the token fetch before it can fail; only
                 // failures worth repeating are retried.
@@ -514,17 +536,22 @@ class PayPalClient
      *
      * An empty `POST` body goes out as `{}`: PayPal rejects `[]` on the
      * capture, authorize, reauthorize, and refund calls that take an
-     * optional body.
+     * optional body. A raw body is sent as is, with the JSON content type.
      *
      * @since 1.0.0
      *
-     * @param  string                       $method  HTTP method.
-     * @param  array<array-key, mixed>|null  $body    JSON body, or null for none.
+     * @param  string                       $method   HTTP method.
+     * @param  array<array-key, mixed>|null  $body     JSON body, or null for none.
+     * @param  string|null                  $rawBody  Already-encoded JSON body, sent as is.
      *
      * @return array<string, mixed>
      */
-    protected function options( string $method, ?array $body ): array
+    protected function options( string $method, ?array $body, ?string $rawBody = null ): array
     {
+        if ( null !== $rawBody ) {
+            return [ 'body' => $rawBody ];
+        }
+
         if ( null === $body ) {
             return [];
         }
@@ -629,6 +656,23 @@ class PayPalClient
         }
 
         return is_array( $decoded ) ? $decoded : [];
+    }
+
+    /**
+     * A raw JSON body decoded for the debug log (it is redacted there), or
+     * null when it isn't a JSON object or list.
+     *
+     * @since 1.0.0
+     *
+     * @param  string  $json  Raw JSON body.
+     *
+     * @return array<array-key, mixed>|null
+     */
+    protected static function decodeForLog( string $json ): ?array
+    {
+        $decoded = json_decode( $json, true );
+
+        return is_array( $decoded ) ? $decoded : null;
     }
 
     /**

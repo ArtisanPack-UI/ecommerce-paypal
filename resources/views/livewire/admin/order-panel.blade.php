@@ -40,7 +40,7 @@
 
                 @if ( null !== $details['funding_source'] )
                     <dt class="opacity-75">{{ __( 'Funding source' ) }}</dt>
-                    <dd data-paypal-panel-funding>{{ $details['funding_source'] }}@if ( null !== $details['card'] ) ({{ $details['card'] }})@endif</dd>
+                    <dd data-paypal-panel-funding="{{ $details['funding_source_key'] }}">{{ $details['funding_source'] }}@if ( null !== $details['card'] ) ({{ $details['card'] }})@endif</dd>
                 @endif
 
                 @if ( null !== $details['liability_shift'] )
@@ -58,7 +58,7 @@
                 @if ( null !== $details['authorization'] )
                     <dt class="opacity-75">{{ __( 'Authorization' ) }}</dt>
                     <dd data-paypal-panel-authorization="{{ $details['authorization']['status'] }}">
-                        {{ $details['authorization']['status'] ?? __( 'Unknown' ) }}
+                        {{ $details['authorization']['status_label'] }}
                         @if ( null !== $details['authorization']['expires_at'] && in_array( $details['authorization']['status'], [ null, 'CREATED', 'PENDING' ], true ) )
                             <span @class( [ 'block', 'font-semibold' => $details['authorization']['expired'] ] ) data-paypal-panel-expires>
                                 {{ $details['authorization']['expired']
@@ -72,9 +72,16 @@
                 <dt class="opacity-75">{{ __( 'Disputes' ) }}</dt>
                 <dd data-paypal-panel-disputes="{{ count( $details['disputes'] ) }}">
                     @forelse ( $details['disputes'] as $dispute )
-                        <div class="flex flex-col gap-0.5" wire:key="paypal-dispute-{{ $dispute['id'] }}" data-paypal-panel-dispute="{{ $dispute['id'] }}">
+                        <div
+                            class="flex flex-col gap-0.5"
+                            wire:key="paypal-dispute-{{ $dispute['id'] }}"
+                            data-paypal-panel-dispute="{{ $dispute['id'] }}"
+                            data-paypal-panel-dispute-status="{{ $dispute['status'] }}"
+                            data-paypal-panel-dispute-reason="{{ $dispute['reason'] }}"
+                            data-paypal-panel-dispute-outcome="{{ $dispute['outcome'] }}"
+                        >
                             <span>
-                                <x-artisanpack-badge :value="str_replace( '_', ' ', $dispute['status'] )" class="badge-sm badge-error badge-soft text-base-content!" />
+                                <x-artisanpack-badge :value="$dispute['status_label']" class="badge-sm badge-error badge-soft text-base-content!" />
                                 @if ( null !== $dispute['url'] )
                                     <a href="{{ $dispute['url'] }}" class="link font-mono" target="_blank" rel="noopener noreferrer">{{ $dispute['id'] }}<span class="sr-only"> {{ __( '(opens PayPal in a new tab)' ) }}</span></a>
                                 @else
@@ -83,11 +90,11 @@
                             </span>
 
                             @if ( null !== $dispute['reason'] || null !== $dispute['amount'] )
-                                <span class="opacity-75">{{ implode( ' · ', array_filter( [ null === $dispute['reason'] ? null : str_replace( '_', ' ', $dispute['reason'] ), $dispute['amount'] ] ) ) }}</span>
+                                <span class="opacity-75">{{ implode( ' · ', array_filter( [ $dispute['reason_label'], $dispute['amount'] ] ) ) }}</span>
                             @endif
 
                             @if ( null !== $dispute['outcome'] )
-                                <span class="opacity-75">{{ __( 'Outcome: :outcome', [ 'outcome' => str_replace( '_', ' ', $dispute['outcome'] ) ] ) }}</span>
+                                <span class="opacity-75">{{ __( 'Outcome: :outcome', [ 'outcome' => $dispute['outcome_label'] ] ) }}</span>
                             @elseif ( null !== $dispute['respond_by'] )
                                 <span>{{ __( 'Respond by :date', [ 'date' => LocalizedDate::format( $dispute['respond_by'] ) ] ) }}</span>
                             @endif

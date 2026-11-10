@@ -21,6 +21,7 @@ use ArtisanPackUI\EcommercePayPal\Gateways\PayPalWalletGateway;
 use ArtisanPackUI\EcommercePayPal\Support\ApplePayDomainAssociation;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalCurrencies;
 use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalWebhookEvents;
+use ArtisanPackUI\EcommercePayPal\Webhooks\WebhookVerifier;
 use Illuminate\Console\Command;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Throwable;
@@ -202,7 +203,7 @@ class VerifyCredentialsCommand extends Command
      */
     protected function checkWebhooks( PayPalClient $client ): void
     {
-        $ids = array_values( array_filter( array_map( 'trim', explode( ',', (string) config( 'artisanpack.ecommerce-paypal.webhook_id', '' ) ) ) ) );
+        $ids = WebhookVerifier::webhookIds();
 
         if ( [] === $ids ) {
             $this->result( __( 'Webhook' ), false, __( 'PAYPAL_WEBHOOK_ID is not set; run ecommerce-paypal:webhooks:register' ) );

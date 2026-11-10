@@ -263,3 +263,39 @@ it( 'ignores a capture recorded for an earlier PayPal Order', function (): void 
 
     $this->paypal->assertSent( 'payments.captures.refund', fn ( Request $request ): bool => str_contains( $request->url(), '/captures/' . Orders::CAPTURE_ID . '/refund' ) );
 } );
+
+it( 'refuses a HUF or TWD amount that is not whole before calling PayPal', function ( string $currency ): void {
+    $order  = Orders::create( [ 'currency' => $currency ], [ 'intent' => 'capture', 'capture_id' => Orders::CAPTURE_ID ] );
+    $result = app( PayPalWalletGateway::class )->refund( $order, new Money( 50, new Currency( $currency ) ), null, [ 'idempotency_key' => 'k', 'refund_id' => 1 ] );
+
+    expect( $result )->toBeInstanceOf( RefundResult::class )
+        ->and( $result->success )->toBeFalse()
+        ->and( $result->errorCode )->toBe( 'amount_not_representable' )
+        ->and( $result->errorMessage )->toBe( 'PayPal only refunds whole ' . $currency . ' amounts.' );
+
+    $this->paypal->assertNotSent( 'payments.captures.refund' );
+    $this->paypal->assertNotSent( 'orders.get' );
+} )->with( [ 'HUF', 'TWD' ] );
+
+it( 'refunds a whole HUF amount', function (): void {
+    $order = Orders::create( [ 'currency' => 'HUF' ], [ 'intent' => 'capture', 'capture_id' => Orders::CAPTURE_ID ] );
+    $this->paypal->respond( 'payments.captures.refund', Orders::body( 'payments/refund', [ 'amount' => [ 'currency_code' => 'HUF', 'value' => '50' ] ] ) );
+
+    $result = app( PayPalWalletGateway::class )->refund( $order, new Money( 5000, new Currency( 'HUF' ) ), null, [ 'idempotency_key' => 'k' ] );
+
+    expect( $result->success )->toBeTrue()
+        ->and( (int) $result->amount->getAmount() )->toBe( 5000 );
+
+    $this->paypal->assertSent( 'payments.captures.refund', fn ( Request $request ): bool => [ 'currency_code' => 'HUF', 'value' => '50' ] === $request['amount'] );
+} );
+
+it( 'never shows the engine\'s reason codes to the buyer', function ( string $reason, ?string $note ): void {
+    app( PayPalWalletGateway::class )->refund( capturedPayPalOrder(), usd( 1000 ), $reason, [ 'idempotency_key' => 'k' ] );
+
+    $this->paypal->assertSent( 'payments.captures.refund', fn ( Request $request ): bool => $note === ( $request->data()['note_to_payer'] ?? null ) );
+} )->with( [
+    'fraudulent'            => [ 'fraudulent', null ],
+    'duplicate'             => [ 'duplicate', null ],
+    'requested by customer' => [ 'requested_by_customer', 'Refund requested by the customer.' ],
+    'free text'             => [ '  Damaged in transit  ', 'Damaged in transit' ],
+] );

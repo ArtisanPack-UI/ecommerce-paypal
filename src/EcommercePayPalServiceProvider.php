@@ -15,6 +15,7 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\EcommercePayPal;
 
+use ArtisanPackUI\Ecommerce\Ecommerce;
 use ArtisanPackUI\Ecommerce\Models\Cart;
 use ArtisanPackUI\Ecommerce\Models\Customer;
 use ArtisanPackUI\Ecommerce\Registries\AccountMenuRegistry;
@@ -28,6 +29,7 @@ use ArtisanPackUI\EcommercePayPal\Api\PayPalClient;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalCredentials;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalTokenProvider;
 use ArtisanPackUI\EcommercePayPal\Console\Commands\InstallCommand;
+use ArtisanPackUI\EcommercePayPal\Console\Commands\PruneVaultCommand;
 use ArtisanPackUI\EcommercePayPal\Console\Commands\ReauthorizeAuthorizationsCommand;
 use ArtisanPackUI\EcommercePayPal\Console\Commands\RegisterWebhookCommand;
 use ArtisanPackUI\EcommercePayPal\Console\Commands\VerifyCredentialsCommand;
@@ -381,7 +383,9 @@ class EcommercePayPalServiceProvider extends ServiceProvider
     }
 
     /**
-     * Loads the package migrations.
+     * Loads the package migrations, unless the host stopped the engine
+     * loading its own with `Ecommerce::ignoreMigrations()` (it then runs
+     * published copies of both).
      *
      * @since 1.0.0
      *
@@ -389,6 +393,10 @@ class EcommercePayPalServiceProvider extends ServiceProvider
      */
     protected function registerMigrations(): void
     {
+        if ( ! Ecommerce::shouldRunMigrations() ) {
+            return;
+        }
+
         $this->loadMigrationsFrom( self::migrationsPath() );
     }
 
@@ -506,7 +514,7 @@ class EcommercePayPalServiceProvider extends ServiceProvider
 
     /**
      * Registers the setup commands and schedules the daily
-     * reauthorization run.
+     * reauthorization and vault-pruning runs.
      *
      * @since 1.0.0
      *
@@ -523,6 +531,7 @@ class EcommercePayPalServiceProvider extends ServiceProvider
             VerifyCredentialsCommand::class,
             RegisterWebhookCommand::class,
             ReauthorizeAuthorizationsCommand::class,
+            PruneVaultCommand::class,
         ] );
 
         // Spec §7.4: authorizations past their honor period are
@@ -530,6 +539,12 @@ class EcommercePayPalServiceProvider extends ServiceProvider
         // is switched off.
         $this->callAfterResolving( Schedule::class, static function ( Schedule $schedule ): void {
             $schedule->command( ReauthorizeAuthorizationsCommand::class )
+                ->daily()
+                ->withoutOverlapping();
+
+            // Spec §10.1: vault rows of customers whose deletion hook was
+            // missed are erased, and removed methods pruned, once a day.
+            $schedule->command( PruneVaultCommand::class )
                 ->daily()
                 ->withoutOverlapping();
         } );

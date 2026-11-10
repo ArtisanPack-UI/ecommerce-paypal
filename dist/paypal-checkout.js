@@ -202,6 +202,13 @@ function cardFieldStyle(element) {
     ":focus": { color }
   };
 }
+function titleFrame(container) {
+  const frame = container.querySelector("iframe");
+  const label = container.getAttribute("aria-labelledby");
+  if (frame && label) {
+    frame.title = document.getElementById(label)?.textContent?.trim() || frame.title;
+  }
+}
 async function mountCardFields(fields, config, callbacks = {}) {
   const paypal = await loadSdk(config, { components: ["card-fields"] });
   const first = Object.values(fields).find(Boolean);
@@ -227,6 +234,7 @@ async function mountCardFields(fields, config, callbacks = {}) {
       const instance = card[method]();
       rendered.push(instance);
       await instance.render(fields[field]);
+      titleFrame(fields[field]);
     }
   }
   return {
@@ -252,12 +260,12 @@ async function mountApplePay(container, config, callbacks = {}) {
     } };
   }
   const options = optionsOf(config);
-  const orderId = orderIdOf(config);
   const button = document.createElement("apple-pay-button");
   button.setAttribute("buttonstyle", "black");
   button.setAttribute("type", "buy");
   button.setAttribute("locale", String(options.locale || "en_US").replace("_", "-"));
   button.addEventListener("click", () => {
+    const orderId = orderIdOf(config);
     const session = new ApplePay(4, {
       countryCode: settings.countryCode,
       merchantCapabilities: settings.merchantCapabilities,
@@ -273,12 +281,19 @@ async function mountApplePay(container, config, callbacks = {}) {
       });
     };
     session.onpaymentauthorized = async (event) => {
+      let completed = false;
       try {
         await applepay.confirmOrder({ orderId, token: event.payment.token, billingContact: event.payment.billingContact });
         session.completePayment(ApplePay.STATUS_SUCCESS);
+        completed = true;
         await call(callbacks.onApprove, { orderID: orderId });
       } catch (error) {
-        session.completePayment(ApplePay.STATUS_FAILURE);
+        if (!completed) {
+          try {
+            session.completePayment(ApplePay.STATUS_FAILURE);
+          } catch {
+          }
+        }
         call(callbacks.onError, error);
       }
     };
@@ -292,11 +307,15 @@ async function mountGooglePay(container, config, callbacks = {}) {
   const [paypal] = await Promise.all([loadSdk(config, { components: ["googlepay"] }), loadScript(GOOGLE_PAY_SDK_URL)]);
   const googlepay = paypal.Googlepay();
   const settings = await googlepay.config();
+  if (!settings || false === settings.isEligible) {
+    call(callbacks.onIneligible);
+    return { eligible: false, close: () => {
+    } };
+  }
   const options = optionsOf(config);
-  const orderId = orderIdOf(config);
   const client = new window.google.payments.api.PaymentsClient({ environment: "live" === options.mode ? "PRODUCTION" : "TEST" });
   const base = { apiVersion: settings.apiVersion, apiVersionMinor: settings.apiVersionMinor };
-  const ready = false === settings?.isEligible ? { result: false } : await client.isReadyToPay({ ...base, allowedPaymentMethods: settings.allowedPaymentMethods });
+  const ready = await client.isReadyToPay({ ...base, allowedPaymentMethods: settings.allowedPaymentMethods });
   if (!ready?.result) {
     call(callbacks.onIneligible);
     return { eligible: false, close: () => {
@@ -305,7 +324,9 @@ async function mountGooglePay(container, config, callbacks = {}) {
   const button = client.createButton({
     buttonType: "pay",
     buttonSizeMode: "fill",
+    buttonLocale: String(options.locale || "en").slice(0, 2),
     onClick: async () => {
+      const orderId = orderIdOf(config);
       try {
         const data = await client.loadPaymentData({
           ...base,

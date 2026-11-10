@@ -5,11 +5,14 @@ declare( strict_types=1 );
 use ArtisanPackUI\Ecommerce\Models\Order;
 use ArtisanPackUI\Ecommerce\Models\OrderNote;
 use ArtisanPackUI\Ecommerce\Models\OrderTimelineEntry;
+use ArtisanPackUI\EcommercePayPal\Jobs\ProcessPayPalWebhook;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalOrderMeta;
 use ArtisanPackUI\EcommercePayPal\Testing\PayPalFake;
 use ArtisanPackUI\EcommercePayPal\Webhooks\Handlers\DisputeEventHandler;
+use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalWebhookProcessor;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Sleep;
 use Tests\Support\PayPalTestOrders as Orders;
 use Tests\Support\PayPalWebhooks as Webhooks;
@@ -164,8 +167,8 @@ it( 'labels every documented reason and outcome', function (): void {
 it( 'adds one note when PayPal redelivers a dispute event the order already processed', function (): void {
     $event = [ 'id' => 'WH-DISPUTE-AGAIN', 'event_type' => 'CUSTOMER.DISPUTE.CREATED', 'resource' => [ 'dispute_id' => PAYPAL_DISPUTE_ID ] ];
 
-    app( ArtisanPackUI\EcommercePayPal\Webhooks\PayPalWebhookProcessor::class )->process( $event );
-    app( ArtisanPackUI\EcommercePayPal\Webhooks\PayPalWebhookProcessor::class )->process( $event );
+    app( PayPalWebhookProcessor::class )->process( $event );
+    app( PayPalWebhookProcessor::class )->process( $event );
 
     expect( OrderNote::query()->count() )->toBe( 1 )
         ->and( $this->hooks )->toHaveCount( 1 );
@@ -179,20 +182,52 @@ it( 'writes the respond-by date in the app locale and timezone', function (): vo
         ->and( DisputeEventHandler::date( null ) )->toBeNull();
 } );
 
-it( 'processes a dispute event again when its first attempt failed', function (): void {
+it( 'reports a listener that throws without repeating the note or timeline entry', function (): void {
+    Exceptions::fake();
     $event    = [ 'id' => 'WH-DISPUTE-RETRY', 'event_type' => 'CUSTOMER.DISPUTE.CREATED', 'resource' => [ 'dispute_id' => PAYPAL_DISPUTE_ID ] ];
     $attempts = 0;
 
     addAction( 'ap.ecommerce.paypal.disputeCreated', function () use ( &$attempts ): void {
-        if ( 1 === ++$attempts ) {
-            throw new RuntimeException( 'listener failed' );
+        $attempts++;
+
+        throw new RuntimeException( 'listener failed' );
+    } );
+
+    ( new ProcessPayPalWebhook( $event ) )->handle( app( PayPalWebhookProcessor::class ) );
+    ( new ProcessPayPalWebhook( $event ) )->handle( app( PayPalWebhookProcessor::class ) );
+
+    expect( $attempts )->toBe( 1 )
+        ->and( OrderNote::query()->where( 'order_id', $this->order->id )->count() )->toBe( 1 )
+        ->and( OrderTimelineEntry::query()->where( 'order_id', $this->order->id )->where( 'event_type', 'paypal.dispute_created' )->count() )->toBe( 1 )
+        ->and( PayPalOrderMeta::get( $this->order->fresh(), 'webhook_events' ) )->toBe( [ 'WH-DISPUTE-RETRY' ] );
+
+    Exceptions::assertReported( fn ( RuntimeException $exception ): bool => 'listener failed' === $exception->getMessage() );
+} );
+
+it( 'keeps nothing from an event whose work failed part way, so the retry does it all', function (): void {
+    $event = [ 'id' => 'WH-DISPUTE-RETRY', 'event_type' => 'CUSTOMER.DISPUTE.CREATED', 'resource' => [ 'dispute_id' => PAYPAL_DISPUTE_ID ] ];
+    $fail  = true;
+
+    OrderTimelineEntry::creating( function () use ( &$fail ): void {
+        if ( $fail ) {
+            throw new RuntimeException( 'database went away' );
         }
     } );
 
-    expect( fn () => app( ArtisanPackUI\EcommercePayPal\Webhooks\PayPalWebhookProcessor::class )->process( $event ) )->toThrow( RuntimeException::class );
+    expect( fn () => app( PayPalWebhookProcessor::class )->process( $event ) )->toThrow( RuntimeException::class );
 
-    app( ArtisanPackUI\EcommercePayPal\Webhooks\PayPalWebhookProcessor::class )->process( $event );
+    $order = $this->order->fresh();
 
-    expect( $attempts )->toBe( 2 )
-        ->and( PayPalOrderMeta::get( $this->order->fresh(), 'webhook_events' ) )->toBe( [ 'WH-DISPUTE-RETRY' ] );
+    expect( PayPalOrderMeta::get( $order, 'webhook_events' ) )->toBeNull()
+        ->and( PayPalOrderMeta::get( $order, 'disputes' ) )->toBeNull()
+        ->and( OrderTimelineEntry::query()->where( 'order_id', $order->id )->count() )->toBe( 0 )
+        ->and( $this->hooks )->toBe( [] );
+
+    $fail = false;
+    app( PayPalWebhookProcessor::class )->process( $event );
+
+    expect( PayPalOrderMeta::get( $this->order->fresh(), 'webhook_events' ) )->toBe( [ 'WH-DISPUTE-RETRY' ] )
+        ->and( OrderTimelineEntry::query()->where( 'order_id', $order->id )->where( 'event_type', 'paypal.dispute_created' )->count() )->toBe( 1 )
+        ->and( OrderNote::query()->where( 'order_id', $order->id )->count() )->toBe( 1 )
+        ->and( $this->hooks )->toBe( [ [ 'ap.ecommerce.paypal.disputeCreated', $order->id, PAYPAL_DISPUTE_ID ] ] );
 } );

@@ -8,6 +8,7 @@ use ArtisanPackUI\Ecommerce\Registries\SettingsRegistry;
 use ArtisanPackUI\Ecommerce\Settings\SettingsRepository;
 use ArtisanPackUI\EcommercePayPal\EcommercePayPalServiceProvider;
 use ArtisanPackUI\EcommercePayPal\Settings\PayPalSettings;
+use ArtisanPackUI\EcommercePayPal\Support\ApplePayDomainAssociation;
 use ArtisanPackUI\EcommercePayPal\Testing\PayPalFake;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
@@ -226,6 +227,63 @@ it( 'refuses Apple Pay without a domain association file', function (): void {
     expect( paypalSettingErrors( [ 'paypal.methods.apple_pay.enabled' => true ] ) )->toBe( [ 'paypal-apple-pay-domain-missing' ] )
         ->and( paypalSettingErrors( [ 'paypal.methods.apple_pay.enabled' => true, 'paypal.methods.apple_pay.domain_association' => 'https://example.com/file' ] ) )->toBe( [] );
 } );
+
+it( 'refuses a domain association setting that can\'t be used', function ( string $value ): void {
+    expect( paypalSettingErrors( [ 'paypal.methods.apple_pay.domain_association' => $value ] ) )->toBe( [ 'paypal-apple-pay-domain-invalid' ] );
+} )->with( [
+    'non-hex contents' => [ 'not the association file' ],
+    'plain http url'   => [ 'http://files.example/association' ],
+    'missing file'     => [ '/nowhere/' . ApplePayDomainAssociation::FILE_NAME ],
+    'another file'     => [ '/etc/hosts' ],
+] );
+
+it( 'refuses a local association file whose contents aren\'t Apple\'s', function (): void {
+    $dir  = sys_get_temp_dir() . '/paypal-association-' . uniqid();
+    $path = $dir . '/' . ApplePayDomainAssociation::FILE_NAME;
+    mkdir( $dir );
+
+    try {
+        file_put_contents( $path, 'not the association file' );
+
+        expect( paypalSettingErrors( [ 'paypal.methods.apple_pay.domain_association' => $path ] ) )->toBe( [ 'paypal-apple-pay-domain-invalid' ] );
+
+        file_put_contents( $path, '7B227073704964223A2230313233343536373839414243444546' );
+
+        expect( paypalSettingErrors( [ 'paypal.methods.apple_pay.domain_association' => $path ] ) )->toBe( [] );
+    } finally {
+        @unlink( $path );
+        @rmdir( $dir );
+    }
+} );
+
+it( 'refuses Apple Pay on an empty setting when the published association file is unusable', function (): void {
+    $published = ApplePayDomainAssociation::publishedPath();
+    $original  = is_file( $published ) ? file_get_contents( $published ) : null;
+
+    if ( ! is_dir( dirname( $published ) ) ) {
+        mkdir( dirname( $published ), 0755, true );
+    }
+
+    try {
+        file_put_contents( $published, 'not the association file' );
+
+        expect( paypalSettingErrors( [ 'paypal.methods.apple_pay.enabled' => true ] ) )->toBe( [ 'paypal-apple-pay-domain-invalid' ] );
+
+        file_put_contents( $published, '7B227073704964223A2230313233343536373839414243444546' );
+
+        expect( paypalSettingErrors( [ 'paypal.methods.apple_pay.enabled' => true ] ) )->toBe( [] );
+    } finally {
+        null === $original ? @unlink( $published ) : file_put_contents( $published, $original );
+    }
+} );
+
+it( 'accepts a usable domain association setting, or none', function ( string $value ): void {
+    expect( paypalSettingErrors( [ 'paypal.methods.apple_pay.domain_association' => $value ] ) )->toBe( [] );
+} )->with( [
+    'hex contents' => [ '7B227073704964223A2230313233343536373839414243444546' ],
+    'https url'    => [ 'https://files.example/association' ],
+    'empty'        => [ '' ],
+] );
 
 it( 'checks the combined state, including keys from other writes', function (): void {
     $this->settings->update( 'paypal', [ 'paypal.methods.paypal.enabled' => false, 'paypal.methods.card.enabled' => true, 'paypal.vault.enabled' => true ] );

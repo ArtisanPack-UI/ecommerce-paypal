@@ -7,7 +7,10 @@ use ArtisanPackUI\EcommercePayPal\Models\PayPalCustomer;
 use ArtisanPackUI\EcommercePayPal\Models\PayPalPaymentToken;
 use ArtisanPackUI\EcommercePayPal\Testing\PayPalFake;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Sleep;
+use Monolog\Handler\TestHandler;
+use Monolog\LogRecord;
 use Tests\Support\PayPalWebhooks as Webhooks;
 
 uses( RefreshDatabase::class );
@@ -34,12 +37,24 @@ describe( 'VAULT.PAYMENT-TOKEN.DELETED', function (): void {
             ->and( $other->refresh()->is_default )->toBeTrue();
     } );
 
-    it( 'ignores a deletion PayPal doesn\'t confirm', function (): void {
+    it( 'ignores a deletion PayPal doesn\'t confirm, logging no token id', function (): void {
+        config( [
+            'artisanpack.ecommerce-paypal.logging.channel' => 'paypal-vault-event-test',
+            'logging.channels.paypal-vault-event-test'     => [ 'driver' => 'monolog', 'handler' => TestHandler::class ],
+        ] );
+
         $token = PayPalPaymentToken::factory()->create( [ 'paypal_token_id' => '8kk8451t' ] );
 
         Webhooks::post( $this, 'VAULT.PAYMENT-TOKEN.DELETED', [ 'id' => '8kk8451t' ] )->assertOk();
 
-        expect( $token->refresh()->trashed() )->toBeFalse();
+        $records = array_values( array_filter(
+            Log::channel( 'paypal-vault-event-test' )->getLogger()->getHandlers()[0]->getRecords(),
+            static fn ( LogRecord $record ): bool => str_contains( $record->message, 'PayPal still has' ),
+        ) );
+
+        expect( $token->refresh()->trashed() )->toBeFalse()
+            ->and( $records )->toHaveCount( 1 )
+            ->and( $records[0]->context )->toBe( [ 'token_id' => '[redacted]' ] );
     } );
 
     it( 'leaves the other mode\'s tokens alone', function (): void {

@@ -75,11 +75,19 @@ return [
     | certificate, no API call) or `postback` (ask PayPal's
     | verify-webhook-signature endpoint).
     |
+    | `webhook_tolerance_seconds` is how far a delivery's transmission time
+    | may be from now. It defaults to 3 days, PayPal's retry horizon, so
+    | PayPal's own redeliveries aren't rejected as stale; `0` turns the
+    | check off. Replays can't act twice: the signature covers the
+    | transmission id and time, and processed event ids are dropped.
+    |
     */
 
     'webhook_id' => env( 'PAYPAL_WEBHOOK_ID' ),
 
     'webhook_verification' => env( 'PAYPAL_WEBHOOK_VERIFICATION', 'local' ),
+
+    'webhook_tolerance_seconds' => env( 'PAYPAL_WEBHOOK_TOLERANCE_SECONDS', 259200 ),
 
     /*
     |--------------------------------------------------------------------------
@@ -183,12 +191,15 @@ return [
     |--------------------------------------------------------------------------
     |
     | Lets signed-in shoppers save PayPal and cards for later. Needs the
-    | `paypal` or `card` method enabled.
+    | `paypal` or `card` method enabled. `prune_after_days` is how long a
+    | removed method's display data is kept before the daily
+    | `ecommerce-paypal:prune-vault` command deletes the row.
     |
     */
 
     'vault' => [
-        'enabled' => false,
+        'enabled'          => false,
+        'prune_after_days' => (int) env( 'PAYPAL_VAULT_PRUNE_AFTER_DAYS', 30 ),
     ],
 
     /*

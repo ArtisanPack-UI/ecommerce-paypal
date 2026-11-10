@@ -22,6 +22,7 @@ use ArtisanPackUI\EcommercePayPal\Api\PayPalClient;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalOrderMeta;
 use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalOrderLocator;
 use Carbon\CarbonImmutable;
+use Closure;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Throwable;
@@ -39,7 +40,9 @@ use Throwable;
  *   entry;
  * - keeps a summary in `orders.meta.paypal.disputes.{dispute id}`;
  * - fires `ap.ecommerce.paypal.disputeCreated` / `disputeUpdated` /
- *   `disputeResolved` `(Order $order, array $dispute)`.
+ *   `disputeResolved` `(Order $order, array $dispute)` once the rest has
+ *   committed. A listener that throws is reported, not rethrown, so the
+ *   note and timeline entry aren't written again on a retry.
  *
  * The order status isn't changed. Moving disputed orders is store policy,
  * which hosts can apply from the hooks or a kanban automation.
@@ -198,7 +201,8 @@ class DisputeEventHandler extends WebhookEventHandler
     }
 
     /**
-     * The event's side effects: summary, timeline entry, note, and hook.
+     * The event's side effects: summary, timeline entry, and note, with
+     * the hook returned to fire after commit.
      *
      * @since 1.0.0
      *
@@ -207,9 +211,9 @@ class DisputeEventHandler extends WebhookEventHandler
      * @param  Order          $order    Order.
      * @param  PayPalDispute  $dispute  Dispute, as PayPal returned it.
      *
-     * @return void
+     * @return Closure The hook to fire after commit.
      */
-    protected function apply( string $type, string $hook, Order $order, PayPalDispute $dispute ): void
+    protected function apply( string $type, string $hook, Order $order, PayPalDispute $dispute ): Closure
     {
         $disputeId = $dispute->id();
         $summary   = $this->summary( $dispute );
@@ -229,7 +233,7 @@ class DisputeEventHandler extends WebhookEventHandler
             ] );
         }
 
-        doAction( $hook, $order, $summary );
+        return fn () => $this->fire( $hook, $order, $summary );
     }
 
     /**

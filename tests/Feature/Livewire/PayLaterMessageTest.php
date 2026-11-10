@@ -8,6 +8,7 @@ use ArtisanPackUI\EcommercePayPal\Support\PayLaterMessaging;
 use ArtisanPackUI\EcommerceStorefrontLivewire\Support\StorefrontCart;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Blade;
+use Illuminate\Support\Facades\Vite;
 use Livewire\Livewire;
 use Money\Money;
 use Tests\Support\PayPalWebhooks;
@@ -46,6 +47,24 @@ describe( 'blade component', function (): void {
             ->toContain( '240.00' )
             ->toContain( 'vendor\/ecommerce-paypal\/paypal-checkout.js' )
             ->not->toContain( 'client-secret' );
+    } );
+
+    it( 'gives the inline script Vite\'s CSP nonce', function (): void {
+        Vite::useCspNonce( 'abc' );
+
+        expect( renderPayLaterMessage( ':amount="6000" placement="product"' ) )->toContain( '<script type="module" nonce="abc"' );
+    } );
+
+    it( 'prefers an explicit nonce over Vite\'s', function (): void {
+        Vite::useCspNonce( 'abc' );
+
+        expect( renderPayLaterMessage( ':amount="6000" placement="product" nonce="xyz"' ) )->toContain( '<script type="module" nonce="xyz"' )
+            ->not->toContain( 'nonce="abc"' );
+    } );
+
+    it( 'adds no nonce when the page uses none', function (): void {
+        expect( renderPayLaterMessage( ':amount="6000" placement="product"' ) )->toContain( '<script type="module"' )
+            ->not->toContain( 'nonce=' );
     } );
 
     it( 'takes minor units in the store currency', function (): void {

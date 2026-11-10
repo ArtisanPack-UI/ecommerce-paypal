@@ -499,13 +499,35 @@ export function cardFieldStyle( element ) {
 }
 
 /**
+ * Names a hosted field's iframe after the field's visible label (the
+ * element its container's `aria-labelledby` points at), so screen readers
+ * announce the store's translated label rather than PayPal's English title.
+ * Leaves PayPal's title when there is no label.
+ *
+ * @since 1.0.0
+ *
+ * @param {HTMLElement} container Field container.
+ *
+ * @returns {void}
+ */
+function titleFrame( container ) {
+    const frame = container.querySelector( 'iframe' );
+    const label = container.getAttribute( 'aria-labelledby' );
+
+    if ( frame && label ) {
+        frame.title = document.getElementById( label )?.textContent?.trim() || frame.title;
+    }
+}
+
+/**
  * Mounts PayPal's hosted card fields. `fields` maps `number`, `expiry`,
  * `cvv`, and (optionally) `name` to their containers.
  *
  * `onChange` gets PayPal's field state on every change and `onBlur` when a
  * field loses focus (falling back to `onChange`), so a wrapper can clear an
  * error while the shopper types and show one once they move on. The style
- * defaults to {@see cardFieldStyle} of the first container.
+ * defaults to {@see cardFieldStyle} of the first container. Each rendered
+ * iframe is titled with its container's `aria-labelledby` label.
  *
  * @since 1.0.0
  *
@@ -544,6 +566,7 @@ export async function mountCardFields( fields, config, callbacks = {} ) {
 
             rendered.push( instance );
             await instance.render( fields[ field ] );
+            titleFrame( fields[ field ] );
         }
     }
 
@@ -587,7 +610,6 @@ export async function mountApplePay( container, config, callbacks = {} ) {
     }
 
     const options = optionsOf( config );
-    const orderId = orderIdOf( config );
     const button  = document.createElement( 'apple-pay-button' );
 
     button.setAttribute( 'buttonstyle', 'black' );
@@ -595,6 +617,8 @@ export async function mountApplePay( container, config, callbacks = {} ) {
     button.setAttribute( 'locale', String( options.locale || 'en_US' ).replace( '_', '-' ) );
 
     button.addEventListener( 'click', () => {
+        // Read when clicked: the host may have replaced the Order since.
+        const orderId = orderIdOf( config );
         const session = new ApplePay( 4, {
             countryCode: settings.countryCode,
             merchantCapabilities: settings.merchantCapabilities,
@@ -613,13 +637,26 @@ export async function mountApplePay( container, config, callbacks = {} ) {
                 } );
         };
 
+        // The sheet only shows success once PayPal confirmed the Order. A
+        // failing onApprove after that reports the error without completing
+        // the (already closed) sheet a second time.
         session.onpaymentauthorized = async ( event ) => {
+            let completed = false;
+
             try {
                 await applepay.confirmOrder( { orderId, token: event.payment.token, billingContact: event.payment.billingContact } );
                 session.completePayment( ApplePay.STATUS_SUCCESS );
+                completed = true;
                 await call( callbacks.onApprove, { orderID: orderId } );
             } catch ( error ) {
-                session.completePayment( ApplePay.STATUS_FAILURE );
+                if ( ! completed ) {
+                    try {
+                        session.completePayment( ApplePay.STATUS_FAILURE );
+                    } catch {
+                        // The sheet may already be gone.
+                    }
+                }
+
                 call( callbacks.onError, error );
             }
         };
@@ -649,11 +686,17 @@ export async function mountGooglePay( container, config, callbacks = {} ) {
     const [ paypal ] = await Promise.all( [ loadSdk( config, { components: [ 'googlepay' ] } ), loadScript( GOOGLE_PAY_SDK_URL ) ] );
     const googlepay  = paypal.Googlepay();
     const settings   = await googlepay.config();
-    const options    = optionsOf( config );
-    const orderId    = orderIdOf( config );
-    const client     = new window.google.payments.api.PaymentsClient( { environment: 'live' === options.mode ? 'PRODUCTION' : 'TEST' } );
-    const base       = { apiVersion: settings.apiVersion, apiVersionMinor: settings.apiVersionMinor };
-    const ready      = false === settings?.isEligible ? { result: false } : await client.isReadyToPay( { ...base, allowedPaymentMethods: settings.allowedPaymentMethods } );
+
+    if ( ! settings || false === settings.isEligible ) {
+        call( callbacks.onIneligible );
+
+        return { eligible: false, close: () => {} };
+    }
+
+    const options = optionsOf( config );
+    const client  = new window.google.payments.api.PaymentsClient( { environment: 'live' === options.mode ? 'PRODUCTION' : 'TEST' } );
+    const base    = { apiVersion: settings.apiVersion, apiVersionMinor: settings.apiVersionMinor };
+    const ready   = await client.isReadyToPay( { ...base, allowedPaymentMethods: settings.allowedPaymentMethods } );
 
     if ( ! ready?.result ) {
         call( callbacks.onIneligible );
@@ -664,7 +707,11 @@ export async function mountGooglePay( container, config, callbacks = {} ) {
     const button = client.createButton( {
         buttonType: 'pay',
         buttonSizeMode: 'fill',
+        buttonLocale: String( options.locale || 'en' ).slice( 0, 2 ),
         onClick: async () => {
+            // Read when clicked: the host may have replaced the Order since.
+            const orderId = orderIdOf( config );
+
             try {
                 const data = await client.loadPaymentData( {
                     ...base,

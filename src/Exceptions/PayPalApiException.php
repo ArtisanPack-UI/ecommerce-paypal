@@ -15,6 +15,7 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\EcommercePayPal\Exceptions;
 
+use ArtisanPackUI\EcommercePayPal\Support\PayPalRedactor;
 use RuntimeException;
 use Throwable;
 
@@ -105,6 +106,9 @@ class PayPalApiException extends RuntimeException
     /**
      * Builds the exception for a request that got no response.
      *
+     * The connection error names the URL, so a saved-payment token id in it
+     * is masked before it can reach a log.
+     *
      * @since 1.0.0
      *
      * @param  Throwable  $previous  The connection error.
@@ -113,7 +117,9 @@ class PayPalApiException extends RuntimeException
      */
     public static function connectionFailed( Throwable $previous ): self
     {
-        return new self( 'PayPal could not be reached: ' . $previous->getMessage(), 0, 'CONNECTION_ERROR', [], null, $previous );
+        $message = (string) preg_replace( '#(/v3/vault/(?:payment|setup)-tokens/)[^/\s?]+#', '$1' . PayPalRedactor::MASK, $previous->getMessage() );
+
+        return new self( 'PayPal could not be reached: ' . $message, 0, 'CONNECTION_ERROR', [], null, $previous );
     }
 
     /**

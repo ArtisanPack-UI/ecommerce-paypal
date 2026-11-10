@@ -127,6 +127,23 @@ describe( 'component', function (): void {
             ->and( $other->refresh()->is_default )->toBeTrue();
     } );
 
+    it( 'forgets the method it was asked about when the shopper cancels', function (): void {
+        $customer = Shoppers::signIn();
+        $card     = PayPalPaymentToken::factory()->create( [ 'customer_id' => $customer->id ] );
+
+        Livewire::test( SavedPaymentMethods::class )
+            ->call( 'confirmDelete', $card->id )
+            ->assertSet( 'deletingId', $card->id )
+            ->call( 'cancelDelete' )
+            ->assertSet( 'confirmingDelete', false )
+            ->assertSet( 'deletingId', null )
+            ->assertSeeHtml( 'data-paypal-saved-method-delete-cancel' );
+
+        $this->paypal->assertNotSent( 'vault.payment_tokens.delete' );
+
+        expect( $card->refresh()->trashed() )->toBeFalse();
+    } );
+
     it( 'keeps the method when PayPal can\'t delete it', function (): void {
         Exceptions::fake();
 

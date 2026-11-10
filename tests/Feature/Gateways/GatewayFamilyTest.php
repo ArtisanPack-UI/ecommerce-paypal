@@ -146,7 +146,19 @@ describe( 'availability', function (): void {
         $registry = bootPayPal( [ 'methods.paypal.enabled' => true, 'methods.card.enabled' => true ] );
 
         expect( $registry->availableFor( CartBuilder::make( [ [ 'Sticker', 40, 1 ] ], [ 'currency' => 'HUF' ] ) ) )->toBe( [] )
-            ->and( array_keys( $registry->availableFor( CartBuilder::make( [ [ 'Sticker', 50, 1 ] ], [ 'currency' => 'HUF' ] ) ) ) )->toBe( [ 'paypal', 'paypal-card' ] );
+            ->and( array_keys( $registry->availableFor( CartBuilder::make( [ [ 'Sticker', 100, 1 ] ], [ 'currency' => 'HUF' ] ) ) ) )->toBe( [ 'paypal', 'paypal-card' ] );
+    } );
+
+    it( 'hides every method when a HUF total is not a whole forint, so PayPal never rounds it', function (): void {
+        $registry = bootPayPal( [
+            'methods.paypal.enabled'     => true,
+            'methods.card.enabled'       => true,
+            'methods.apple_pay.enabled'  => true,
+            'methods.google_pay.enabled' => true,
+        ] );
+
+        expect( $registry->availableFor( CartBuilder::make( [ [ 'Lamp', 123450, 1 ] ], [ 'currency' => 'HUF' ] ) ) )->toBe( [] )
+            ->and( array_keys( $registry->availableFor( CartBuilder::make( [ [ 'Lamp', 123400, 1 ] ], [ 'currency' => 'HUF' ] ) ) ) )->toBe( PAYPAL_KEYS );
     } );
 
     it( 'leaves other gateways alone', function (): void {

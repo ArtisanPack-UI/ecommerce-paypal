@@ -3,7 +3,8 @@
 
     The fields are PayPal-hosted iframes inside `wire:ignore`: card data
     never reaches Livewire. Each field has a visible label (the iframe is
-    named by `aria-labelledby` on its group) and an inline error.
+    named by `aria-labelledby` on its group) and an inline error, announced
+    politely. "Pay now" with invalid details names the fields to check.
 
     A signed-in shopper's saved cards are listed above the fields with "Use
     a new card". While a saved card is chosen the fields stay mounted but
@@ -62,7 +63,7 @@
                             class="min-h-12 data-[invalid=true]:outline-2 data-[invalid=true]:outline-error rounded-field"
                             data-paypal-card-field="{{ $field }}"
                         ></div>
-                        <p id="paypal-card-{{ $field }}-error-{{ $this->getId() }}" class="text-sm text-[color-mix(in_oklab,var(--color-error)_55%,var(--color-base-content))] empty:hidden" data-paypal-card-error="{{ $field }}"></p>
+                        <p id="paypal-card-{{ $field }}-error-{{ $this->getId() }}" class="text-sm text-[color-mix(in_oklab,var(--color-error)_55%,var(--color-base-content))] empty:hidden" aria-live="polite" data-paypal-card-error="{{ $field }}"></p>
                     </div>
                 @endforeach
 
@@ -102,6 +103,19 @@
         const stateKeys = { name: 'cardNameField', number: 'cardNumberField', expiry: 'cardExpiryField', cvv: 'cardCvvField' };
         let card        = null;
         let processing  = false;
+        let quiet       = false;
+
+        // Set while the checkout acts on an approved payment, with the
+        // Livewire requests still in flight and the timer that waits for
+        // them to settle.
+        let awaitingOutcome = false;
+        let inFlight        = 0;
+        let settleTimer     = null;
+        let leaving         = false;
+
+        window.addEventListener( 'beforeunload', () => {
+            leaving = true;
+        }, { once: true } );
 
         root.querySelectorAll( '[data-paypal-card-field]' ).forEach( ( element ) => {
             fields[ element.dataset.paypalCardField ] = element;
@@ -137,6 +151,22 @@
 
         const fieldState = ( state, field ) => state?.fields?.[ stateKeys[ field ] ];
 
+        // "Check these card details: Card number and Security code." The
+        // fields are named in words, so the summary doesn't rely on the
+        // outline color alone.
+        const invalidMessage = ( invalid ) => {
+            const labels = ( 0 === invalid.length ? Object.keys( fields ) : invalid ).map( ( field ) => settings.labels[ field ] ).filter( Boolean );
+            let list     = labels.join( ', ' );
+
+            try {
+                list = new Intl.ListFormat( document.documentElement.lang || undefined, { type: 'conjunction' } ).format( labels );
+            } catch {
+                // An unknown page language keeps the comma-separated list.
+            }
+
+            return settings.messages.invalid.replace( ':fields', list );
+        };
+
         // After a failure (including PayPal's 3-D Secure window closing),
         // focus goes back to the button the shopper pressed, but only when
         // it was lost (on the page body, or on an element that has left the
@@ -149,8 +179,66 @@
             }
         };
 
-        $wire.on( 'payment-failed', ( event ) => {
+        // Gives "Pay now" back once the outcome of an approved payment is
+        // known, or can no longer arrive.
+        const reset = () => {
+            awaitingOutcome = false;
+            window.clearTimeout( settleTimer );
             setProcessing( false );
+            restoreFocus( submit );
+        };
+
+        // An approved payment either leaves the page, re-renders this
+        // driver, or fails with `payment-failed`. When the checkout keeps
+        // the shopper here instead (it couldn't place the order and shows
+        // why), nothing reports back: once Livewire is idle, "Pay now" is
+        // enabled again and the status cleared.
+        const settle = () => {
+            window.clearTimeout( settleTimer );
+            settleTimer = window.setTimeout( () => {
+                if ( awaitingOutcome && 0 === inFlight && ! leaving && document.contains( submit ) ) {
+                    reset();
+                    statusBox.textContent = '';
+                }
+            }, 300 );
+        };
+
+        // Removed with the component (Livewire cleans up `$wire.$hook`).
+        $wire.$hook( 'request', ( { succeed, fail } ) => {
+            inFlight++;
+            window.clearTimeout( settleTimer );
+
+            succeed( () => {
+                inFlight = Math.max( 0, inFlight - 1 );
+
+                if ( awaitingOutcome ) {
+                    settle();
+                }
+            } );
+
+            // A failed request (an expired page, a server error, no
+            // connection) never reaches the checkout.
+            fail( () => {
+                inFlight = Math.max( 0, inFlight - 1 );
+
+                if ( awaitingOutcome ) {
+                    reset();
+                    announce( errorBox, settings.messages.failed );
+                }
+            } );
+        } );
+
+        $wire.on( 'payment-failed', ( event ) => {
+            awaitingOutcome = false;
+            window.clearTimeout( settleTimer );
+            setProcessing( false );
+
+            // Ineligible card fields were already explained politely.
+            if ( quiet ) {
+                quiet = false;
+
+                return;
+            }
 
             // A saved-card failure is announced next to its button; the
             // fields' own region is hidden while a saved card is chosen.
@@ -185,7 +273,7 @@
 
             if ( state && false === state.isFormValid ) {
                 invalid.forEach( ( field ) => showError( field, true ) );
-                announce( errorBox, settings.messages.invalid );
+                announce( errorBox, invalidMessage( invalid ) );
                 fields[ invalid[ 0 ] ]?.querySelector( 'iframe' )?.focus();
 
                 return;
@@ -206,15 +294,31 @@
         import( settings.module )
             .then( ( paypal ) => paypal.mountCardFields( fields, settings.config, {
                 onApprove: async ( data ) => {
-                    await $wire.confirm( data?.orderID ?? null );
+                    awaitingOutcome = true;
+
+                    try {
+                        await $wire.confirm( data?.orderID ?? null );
+                    } catch {
+                        if ( awaitingOutcome ) {
+                            reset();
+                            announce( errorBox, settings.messages.failed );
+                        }
+
+                        return;
+                    }
+
+                    if ( awaitingOutcome ) {
+                        settle();
+                    }
                 },
                 onError: () => {
                     setProcessing( false );
-                    $wire.fail( '' );
+                    $wire.fail( settings.messages.failed );
                 },
                 onIneligible: () => {
                     form.hidden = true;
-                    announce( errorBox, settings.messages.ineligible );
+                    quiet       = true;
+                    announce( statusBox, settings.messages.ineligible );
                     $wire.fail( settings.messages.ineligible );
                 },
                 onChange: ( state ) => {

@@ -134,6 +134,28 @@ final class PayPalTestOrders
     }
 
     /**
+     * An approved Order paid with payment source `$source` (`paypal`,
+     * `card`, `apple_pay`, `google_pay`), so each gateway captures an Order
+     * paid the way it takes payments.
+     *
+     * @since 1.0.0
+     *
+     * @param  string  $source  Payment source.
+     *
+     * @return array<string, mixed>
+     */
+    public static function approvedWith( string $source ): array
+    {
+        $card = [ 'brand' => 'VISA', 'last_digits' => '1111' ];
+
+        return match ( $source ) {
+            'paypal' => self::body( 'orders/approved' ),
+            'card'   => self::body( 'orders/approved', [ 'payment_source' => [ 'card' => $card ], 'payer' => null ] ),
+            default  => self::body( 'orders/approved', [ 'payment_source' => [ $source => [ 'card' => $card ] ], 'payer' => null ] ),
+        };
+    }
+
+    /**
      * An error body with one issue.
      *
      * @since 1.0.0

@@ -35,12 +35,13 @@ function appleDomainAssociation( ?string $value ): void
 }
 
 it( 'serves the configured contents as plain text at the well-known path', function (): void {
-    appleDomainAssociation( '7B227073704964223A2238' );
+    appleDomainAssociation( '7B227073704964223A2230313233343536373839414243444546' );
 
     $this->get( ApplePayDomainAssociation::PATH )
         ->assertOk()
         ->assertHeader( 'Content-Type', 'text/plain; charset=UTF-8' )
-        ->assertSeeText( '7B227073704964223A2238' )
+        ->assertHeader( 'X-Content-Type-Options', 'nosniff' )
+        ->assertSeeText( '7B227073704964223A2230313233343536373839414243444546' )
         ->assertCookieMissing( 'laravel_session' );
 
     expect( route( APPLE_PAY_ROUTE, absolute: false ) )->toBe( ApplePayDomainAssociation::PATH );
@@ -105,6 +106,8 @@ it( 'answers 404 when nothing usable is configured', function ( Closure $arrange
     },
     'missing file'        => fn () => fn ( $test ) => appleDomainAssociation( $test->directory . '/' . ApplePayDomainAssociation::FILE_NAME ),
     'plain http url'      => fn () => fn () => appleDomainAssociation( 'http://files.example/association' ),
+    'non-hex contents'    => fn () => fn () => appleDomainAssociation( '<script>alert(1)</script>' ),
+    'short hex contents'  => fn () => fn () => appleDomainAssociation( '7B2270' ),
     'non-hex url body'    => fn () => function (): void {
         Http::fake( [ 'https://internal.example/*' => Http::response( '{"secret":"value"}', 200 ) ] );
         appleDomainAssociation( 'https://internal.example/status' );
