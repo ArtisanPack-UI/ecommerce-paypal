@@ -116,7 +116,7 @@ describe( 'card fields', function (): void {
         $page = sandboxCardFields( sandboxPaymentStep( 'paypal-card' ) );
 
         $page->click( '[data-paypal-card-submit]' )
-            ->assertSee( 'Check the highlighted card details.' )
+            ->assertSee( 'Check these card details:' )
             ->assertSee( 'Enter a valid card number.' );
 
         Accessibility::assertAccessible( $page );

@@ -39,6 +39,18 @@
         const errorBox  = root.querySelector( '[data-paypal-error]' );
         let quiet       = false;
 
+        // Set while the checkout acts on an approved payment, with the
+        // Livewire requests still in flight and the timer that waits for
+        // them to settle.
+        let awaitingOutcome = false;
+        let inFlight        = 0;
+        let settleTimer     = null;
+        let leaving         = false;
+
+        window.addEventListener( 'beforeunload', () => {
+            leaving = true;
+        }, { once: true } );
+
         // Clears first so the same message is announced again.
         const announce = ( box, message ) => {
             statusBox.textContent = '';
@@ -48,7 +60,19 @@
             } );
         };
 
-        const focusHeading = () => document.getElementById( settings.heading )?.focus();
+        // The step's heading: the placed order's while it waits for its
+        // payment, otherwise the payment step's.
+        const focusHeading = () => {
+            for ( const id of [].concat( settings.heading ) ) {
+                const element = document.getElementById( id );
+
+                if ( element ) {
+                    element.focus();
+
+                    return;
+                }
+            }
+        };
 
         // Focus is lost when it sits on the page body or on an element that
         // has since left the page.
@@ -58,7 +82,64 @@
             return ! active || active === document.body || ! active.isConnected;
         };
 
+        // A closed wallet sheet can leave focus on the page body: keep it
+        // on the payment step, without taking it from another control.
+        const showFailure = ( message ) => {
+            if ( focusLost() ) {
+                focusHeading();
+            }
+
+            announce( errorBox, message || settings.messages.failed );
+        };
+
+        const stopWaiting = () => {
+            awaitingOutcome = false;
+            window.clearTimeout( settleTimer );
+        };
+
+        // An approved payment either leaves the page, re-renders this
+        // driver, or fails with `payment-failed`. When the checkout keeps
+        // the shopper here instead (it couldn't place the order and shows
+        // why), nothing reports back: once Livewire is idle, the
+        // "Confirming…" status is cleared.
+        const settle = () => {
+            window.clearTimeout( settleTimer );
+            settleTimer = window.setTimeout( () => {
+                if ( awaitingOutcome && 0 === inFlight && ! leaving && document.contains( statusBox ) ) {
+                    stopWaiting();
+                    statusBox.textContent = '';
+                }
+            }, 300 );
+        };
+
+        // Removed with the component (Livewire cleans up `$wire.$hook`).
+        $wire.$hook( 'request', ( { succeed, fail } ) => {
+            inFlight++;
+            window.clearTimeout( settleTimer );
+
+            succeed( () => {
+                inFlight = Math.max( 0, inFlight - 1 );
+
+                if ( awaitingOutcome ) {
+                    settle();
+                }
+            } );
+
+            // A failed request (an expired page, a server error, no
+            // connection) never reaches the checkout.
+            fail( () => {
+                inFlight = Math.max( 0, inFlight - 1 );
+
+                if ( awaitingOutcome ) {
+                    stopWaiting();
+                    showFailure( settings.messages.failed );
+                }
+            } );
+        } );
+
         $wire.on( 'payment-failed', ( event ) => {
+            stopWaiting();
+
             // An ineligible wallet was already explained politely.
             if ( quiet ) {
                 quiet = false;
@@ -66,13 +147,7 @@
                 return;
             }
 
-            // A closed wallet sheet can leave focus on the page body: keep
-            // it on the payment step, without taking it from another control.
-            if ( focusLost() ) {
-                focusHeading();
-            }
-
-            announce( errorBox, event?.message || settings.messages.failed );
+            showFailure( event?.message );
         } );
 
         $wire.on( 'paypal-order-changed', ( event ) => {
@@ -84,14 +159,29 @@
             .then( ( paypal ) => paypal[ settings.mount ]( container, settings.config, {
                 label: settings.label,
                 onApprove: async ( data ) => {
+                    awaitingOutcome = true;
                     announce( statusBox, settings.messages.confirming );
-                    await $wire.confirm( data?.orderID ?? null );
+
+                    try {
+                        await $wire.confirm( data?.orderID ?? null );
+                    } catch {
+                        if ( awaitingOutcome ) {
+                            stopWaiting();
+                            showFailure( settings.messages.failed );
+                        }
+
+                        return;
+                    }
+
+                    if ( awaitingOutcome ) {
+                        settle();
+                    }
                 },
                 onCancel: () => {
                     announce( statusBox, settings.messages.canceled );
                     focusHeading();
                 },
-                onError: () => $wire.fail( '' ),
+                onError: () => $wire.fail( settings.messages.failed ),
                 onIneligible: () => {
                     container.hidden = true;
                     quiet            = true;

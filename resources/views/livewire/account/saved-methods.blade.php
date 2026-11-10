@@ -38,7 +38,7 @@
 
                         <div class="flex flex-wrap gap-1">
                             @if ( $method['default'] )
-                                <x-artisanpack-badge :value="__( 'Default' )" class="badge-primary badge-soft" data-paypal-saved-method-default />
+                                <x-artisanpack-badge :value="__( 'Default' )" class="badge-primary badge-soft text-base-content!" data-paypal-saved-method-default />
                             @endif
 
                             @if ( $method['expired'] )
@@ -70,7 +70,7 @@
         <p>{{ null === $deletingLabel ? __( 'It will be removed from PayPal and from your account.' ) : __( ':method will be removed from PayPal and from your account.', [ 'method' => $deletingLabel ] ) }}</p>
 
         <x-slot:actions>
-            <x-artisanpack-button :label="__( 'Cancel' )" class="btn-ghost" @click="$wire.confirmingDelete = false" />
+            <x-artisanpack-button :label="__( 'Cancel' )" class="btn-ghost" wire:click="cancelDelete" data-paypal-saved-method-delete-cancel />
             <x-artisanpack-button :label="__( 'Remove payment method' )" class="btn-error" wire:click="delete" wire:loading.attr="disabled" wire:target="delete" spinner="delete" data-paypal-saved-method-delete-confirm />
         </x-slot:actions>
     </x-artisanpack-modal>

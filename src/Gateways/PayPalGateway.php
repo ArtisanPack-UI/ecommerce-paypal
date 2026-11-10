@@ -1477,7 +1477,7 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
 
         return match ( $status ) {
             'PAYER_ACTION_REQUIRED' => PaymentResult::retryableFailure( $session->amount, 'requires_action', __( 'PayPal needs you to complete another step before this payment can be taken.' ) ),
-            'VOIDED'                => PaymentResult::terminalFailure( $session->amount, 'paypal_order_voided', __( 'This PayPal payment was cancelled. Start the payment again.' ) ),
+            'VOIDED'                => PaymentResult::terminalFailure( $session->amount, 'paypal_order_voided', __( 'This PayPal payment was canceled. Start the payment again.' ) ),
             'CREATED', 'SAVED'      => PaymentResult::terminalFailure( $session->amount, 'payment_not_approved', __( 'The payment has not been approved in PayPal yet.' ) ),
             default                 => PaymentResult::retryableFailure( $session->amount, 'paypal_order_' . strtolower( '' === $status ? 'unknown' : $status ), __( 'PayPal is still processing this payment. Try again in a moment.' ) ),
         };

@@ -86,8 +86,56 @@ it( 'shows the mode, ids linked to the sandbox dashboard, payer, funding, liabil
         ->assertDontSeeHtml( 'href="https://www.sandbox.paypal.com/activity/payment/' . Orders::ORDER_ID . '"' )
         ->assertSee( [ 'buyer@example.com', 'Card', 'Visa ending in 1111', 'Possible (3-D Secure passed)', 'Expires' ] )
         ->assertSeeHtml( 'data-paypal-panel-disputes="1"' )
-        ->assertSee( [ 'PP-D-1', 'WAITING FOR SELLER RESPONSE', 'MERCHANDISE OR SERVICE NOT RECEIVED', '100.00 USD', 'Respond by' ] )
+        ->assertSee( [ 'PP-D-1', 'Waiting for your response', 'Item not received', '100.00 USD', 'Respond by', 'Created' ] )
+        ->assertSeeHtml( 'data-paypal-panel-dispute-status="WAITING_FOR_SELLER_RESPONSE"' )
+        ->assertSeeHtml( 'data-paypal-panel-dispute-reason="MERCHANDISE_OR_SERVICE_NOT_RECEIVED"' )
+        ->assertSeeHtml( 'data-paypal-panel-authorization="CREATED"' )
+        ->assertSeeHtml( 'data-paypal-panel-funding="card"' )
         ->assertSeeHtml( 'href="https://www.sandbox.paypal.com/resolutioncenter/view/PP-D-1"' );
+} );
+
+it( 'labels PayPal\'s statuses, reasons, and outcomes in words', function (): void {
+    panelStaff();
+
+    $order = panelOrder( [
+        'authorization' => [ 'status' => 'PARTIALLY_CAPTURED' ],
+        'disputes'      => [
+            'PP-D-1' => [ 'status' => 'UNDER_REVIEW', 'reason' => 'UNAUTHORISED', 'outcome' => 'RESOLVED_SELLER_FAVOUR' ],
+        ],
+    ] );
+
+    Livewire::test( PayPalOrderPanel::class, [ 'order' => $order ] )
+        ->assertSee( [ 'Under review', 'Unauthorized transaction', 'Outcome: In your favor', 'Partially captured' ] )
+        ->assertDontSeeText( 'UNDER_REVIEW' )
+        ->assertDontSeeText( 'UNDER REVIEW' )
+        ->assertDontSeeText( 'RESOLVED SELLER FAVOUR' )
+        ->assertSeeHtml( 'data-paypal-panel-dispute-status="UNDER_REVIEW"' )
+        ->assertSeeHtml( 'data-paypal-panel-dispute-outcome="RESOLVED_SELLER_FAVOUR"' );
+} );
+
+it( 'makes values PayPal adds later readable', function (): void {
+    panelStaff();
+
+    $order = panelOrder( [
+        'funding_source' => 'trustly_bank',
+        'authorization'  => [ 'status' => 'NEWLY_INVENTED' ],
+        'disputes'       => [
+            'PP-D-1' => [ 'status' => 'AWAITING_ARBITRATION', 'reason' => 'SOMETHING_ELSE' ],
+        ],
+    ] );
+
+    Livewire::test( PayPalOrderPanel::class, [ 'order' => $order ] )
+        ->assertSee( [ 'Trustly Bank', 'Newly Invented', 'Awaiting Arbitration', 'Something Else' ] )
+        ->assertSeeHtml( 'data-paypal-panel-funding="trustly_bank"' );
+} );
+
+it( 'labels every documented PayPal value', function (): void {
+    expect( PayPalOrderPanel::disputeStatus( 'WAITING_FOR_BUYER_RESPONSE' ) )->toBe( 'Waiting for the buyer' )
+        ->and( PayPalOrderPanel::disputeReason( 'MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED' ) )->toBe( 'Item not as described' )
+        ->and( PayPalOrderPanel::disputeReason( 'CANCELED_RECURRING_BILLING' ) )->toBe( 'Canceled recurring billing' )
+        ->and( PayPalOrderPanel::disputeOutcome( 'RESOLVED_BUYER_FAVOUR' ) )->toBe( 'In the buyer\'s favor' )
+        ->and( PayPalOrderPanel::disputeOutcome( 'NONE' ) )->toBe( 'None' )
+        ->and( PayPalOrderPanel::authorizationStatus( 'VOIDED' ) )->toBe( 'Voided' );
 } );
 
 it( 'links live orders to the live dashboard', function (): void {

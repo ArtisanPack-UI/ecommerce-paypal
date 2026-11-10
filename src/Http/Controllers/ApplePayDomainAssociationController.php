@@ -46,8 +46,9 @@ class ApplePayDomainAssociationController
         abort_if( null === $contents, 404 );
 
         return new Response( $contents, 200, [
-            'Content-Type'  => 'text/plain; charset=UTF-8',
-            'Cache-Control' => 'public, max-age=' . ApplePayDomainAssociation::CACHE_SECONDS,
+            'Content-Type'           => 'text/plain; charset=UTF-8',
+            'Cache-Control'          => 'public, max-age=' . ApplePayDomainAssociation::CACHE_SECONDS,
+            'X-Content-Type-Options' => 'nosniff',
         ] );
     }
 }

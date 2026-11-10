@@ -399,11 +399,13 @@ abstract class PayPalPaymentDriver extends PaymentDriver
 
     /**
      * What the view's script needs: the module URL, the client config, the
-     * payment step heading to return focus to, and its messages.
+     * headings to return focus to (the first one on the page wins: the
+     * placed order's heading while its payment is retried, otherwise the
+     * payment step's), and its messages.
      *
      * @since 1.0.0
      *
-     * @param  array<string, string>  $messages  Messages.
+     * @param  array<string, mixed>   $messages  Messages.
      * @param  array<string, mixed>   $extra     Driver-specific settings.
      *
      * @return array<string, mixed>
@@ -418,7 +420,7 @@ abstract class PayPalPaymentDriver extends PaymentDriver
                 'client_secret'   => $this->orderId(),
                 'options'         => $this->options(),
             ],
-            'heading'  => 'ec-checkout-step-payment',
+            'heading'  => [ 'ec-checkout-placement-heading', 'ec-checkout-step-payment' ],
             'messages' => $messages,
             ...$extra,
         ];

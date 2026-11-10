@@ -86,6 +86,39 @@ describe( 'rendering', function (): void {
             ->toContain( 'onBlur' );
     } );
 
+    it( 'announces each field\'s error politely and names the invalid fields in words', function (): void {
+        $component = Livewire::test( PayPalCardFields::class, cardFieldsProps() );
+        $html      = $component->html();
+        $settings  = $component->viewData( 'paypal' );
+        $script    = implode( "\n", (array) ( $component->effects['scripts'] ?? [] ) );
+
+        preg_match_all( '/<p[^>]*data-paypal-card-error="[^"]+"[^>]*>/', $html, $errors );
+
+        expect( $errors[0] )->toHaveCount( 4 );
+
+        foreach ( $errors[0] as $error ) {
+            expect( $error )->toContain( 'aria-live="polite"' );
+        }
+
+        expect( $settings['messages']['invalid'] )->toBe( 'Check these card details: :fields.' )
+            ->and( $settings['labels'] )->toBe( [ 'name' => 'Name on card', 'number' => 'Card number', 'expiry' => 'Expiration date', 'cvv' => 'Security code' ] )
+            ->and( $settings['heading'] )->toBe( [ 'ec-checkout-placement-heading', 'ec-checkout-step-payment' ] )
+            ->and( $script )->toContain( 'Intl.ListFormat' )
+            ->toContain( 'onError: () => {' )
+            ->toContain( '$wire.fail( settings.messages.failed )' )
+            ->toContain( 'announce( statusBox, settings.messages.ineligible )' )
+            ->not->toContain( "\$wire.fail( '' )" );
+    } );
+
+    it( 'translates the invalid-fields summary', function ( string $locale ): void {
+        app()->setLocale( $locale );
+
+        $settings = Livewire::test( PayPalCardFields::class, cardFieldsProps() )->viewData( 'paypal' );
+
+        expect( $settings['messages']['invalid'] )->not->toBe( 'Check these card details: :fields.' )
+            ->toContain( ':fields' );
+    } )->with( [ 'es', 'fr', 'de' ] );
+
     it( 'never takes card data into Livewire', function (): void {
         $component = Livewire::test( PayPalCardFields::class, cardFieldsProps() );
         $html      = $component->html();

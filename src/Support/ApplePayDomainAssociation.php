@@ -34,8 +34,8 @@ use Throwable;
  * When the setting is empty, the file published to
  * {@see self::publishedPath()} is used.
  *
- * A file or URL is only served when it holds what Apple's file holds: one
- * run of hex. The route is public, so this keeps a mistaken (or malicious)
+ * Whatever the source, it is only served when it holds what Apple's file
+ * holds: one run of hex. The route is public, so this keeps a mistaken (or malicious)
  * setting from publishing another file or an internal service's answer.
  *
  * @package    ArtisanPack_UI
@@ -115,7 +115,23 @@ class ApplePayDomainAssociation
      */
     public static function source(): string
     {
-        $value = self::configured();
+        return self::sourceOf( self::configured() );
+    }
+
+    /**
+     * What `$value` would be as the setting: `contents`, `file`, `url`, or
+     * `none` (empty with nothing published, or a path or URL that can't be
+     * used).
+     *
+     * @since 1.0.0
+     *
+     * @param  string  $value  Setting value.
+     *
+     * @return string
+     */
+    public static function sourceOf( string $value ): string
+    {
+        $value = trim( $value );
 
         if ( '' === $value ) {
             return is_file( self::publishedPath() ) ? 'file' : 'none';
@@ -153,7 +169,9 @@ class ApplePayDomainAssociation
         };
         $contents = null === $contents ? '' : trim( $contents );
 
-        if ( '' === $contents || ( 'contents' !== $source && ! self::isAssociation( $contents ) ) ) {
+        // Every source, pasted contents included, must hold what Apple's
+        // file holds: the route is public.
+        if ( '' === $contents || ! self::isAssociation( $contents ) ) {
             return null;
         }
 

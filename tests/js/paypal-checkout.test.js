@@ -414,6 +414,41 @@ describe( 'card fields', () => {
         return { result, settings, card, fields };
     }
 
+    it( 'titles each hosted iframe with its field\'s visible label', async () => {
+        const label = document.createElement( 'span' );
+
+        label.id          = 'card-number-label';
+        label.textContent = '  Kartennummer ';
+        document.body.appendChild( label );
+
+        const render = vi.fn( async ( container ) => {
+            const frame = document.createElement( 'iframe' );
+
+            frame.title = 'paypal_card_number_field';
+            container.appendChild( frame );
+        } );
+        const card   = {
+            isEligible: () => true,
+            NumberField: () => ( { render, close: vi.fn() } ),
+            CVVField: () => ( { render, close: vi.fn() } ),
+        };
+
+        window.paypal = { CardFields: () => card };
+
+        const labelled   = document.createElement( 'div' );
+        const unlabelled = document.createElement( 'div' );
+
+        labelled.setAttribute( 'aria-labelledby', 'card-number-label' );
+
+        const mounting = mountCardFields( { number: labelled, cvv: unlabelled }, clientConfig( { components: [ 'card-fields' ] } ), {} );
+
+        finishLoading( sdkScripts()[ 0 ], window.paypal );
+        await mounting;
+
+        expect( labelled.querySelector( 'iframe' ).title ).toBe( 'Kartennummer' );
+        expect( unlabelled.querySelector( 'iframe' ).title ).toBe( 'paypal_card_number_field' );
+    } );
+
     it( 'renders the given fields for the server-created Order with a themed style', async () => {
         const { result, settings, card } = await mount( {} );
 
@@ -528,7 +563,7 @@ describe( 'apple pay', () => {
      * @param {object} config    Fake `Applepay().config()` answer.
      * @param {object} callbacks Callbacks.
      *
-     * @returns {Promise<{ result: object, container: HTMLElement, applepay: object, sessions: object[] }>}
+     * @returns {Promise<{ result: object, container: HTMLElement, applepay: object, sessions: object[], host: object }>}
      */
     async function mount( config, callbacks = {} ) {
         const sessions = [];
@@ -559,17 +594,18 @@ describe( 'apple pay', () => {
             confirmOrder: vi.fn( async () => ( { approveApplePayPayment: { status: 'APPROVED' } } ) ),
         };
         const container = document.createElement( 'div' );
+        const host      = clientConfig( { components: [ 'applepay' ] } );
 
         window.paypal = { Applepay: () => applepay };
 
-        const mounting = mountApplePay( container, clientConfig( { components: [ 'applepay' ] } ), callbacks );
+        const mounting = mountApplePay( container, host, callbacks );
 
         finishLoading( sdkScripts()[ 0 ], window.paypal );
         finishScript( APPLE_PAY_SDK_URL );
 
         const result = await mounting;
 
-        return { result, container, applepay, sessions };
+        return { result, container, applepay, sessions, host };
     }
 
     it( 'hides itself when PayPal says the merchant isn\'t eligible', async () => {
@@ -612,6 +648,33 @@ describe( 'apple pay', () => {
         expect( sessions[ 0 ].completePayment ).toHaveBeenCalledWith( 1 );
         expect( onError ).toHaveBeenCalled();
         expect( onApprove ).not.toHaveBeenCalled();
+    } );
+
+    it( 'completes the sheet once and reports the error when onApprove fails', async () => {
+        const onApprove               = vi.fn( async () => {
+            throw new Error( 'server refused' );
+        } );
+        const onError                 = vi.fn();
+        const { container, sessions } = await mount( { isEligible: true }, { onApprove, onError } );
+
+        container.querySelector( 'apple-pay-button' ).dispatchEvent( new Event( 'click' ) );
+        await sessions[ 0 ].onpaymentauthorized( { payment: { token: 'apple-token' } } );
+
+        expect( sessions[ 0 ].completePayment ).toHaveBeenCalledTimes( 1 );
+        expect( sessions[ 0 ].completePayment ).toHaveBeenCalledWith( 0 );
+        expect( onError ).toHaveBeenCalledTimes( 1 );
+    } );
+
+    it( 'uses the Order the host holds when the button is clicked', async () => {
+        const onApprove                               = vi.fn();
+        const { container, applepay, sessions, host } = await mount( { isEligible: true }, { onApprove } );
+
+        host.options.order_id = 'ORDER-2';
+        container.querySelector( 'apple-pay-button' ).dispatchEvent( new Event( 'click' ) );
+        await sessions[ 0 ].onpaymentauthorized( { payment: { token: 'apple-token' } } );
+
+        expect( applepay.confirmOrder ).toHaveBeenCalledWith( expect.objectContaining( { orderId: 'ORDER-2' } ) );
+        expect( onApprove ).toHaveBeenCalledWith( { orderID: 'ORDER-2' } );
     } );
 } );
 
@@ -712,6 +775,30 @@ describe( 'google pay', () => {
 
         expect( googlepay.initiatePayerAction ).toHaveBeenCalledWith( { orderId: 'ORDER-1' } );
         expect( googlepay.initiatePayerAction.mock.invocationCallOrder[ 0 ] ).toBeLessThan( onApprove.mock.invocationCallOrder[ 0 ] );
+    } );
+
+    it( 'treats a missing PayPal config as ineligible', async () => {
+        const onIneligible = vi.fn();
+        const googlepay    = { config: vi.fn( async () => undefined ) };
+
+        window.google = { payments: { api: { PaymentsClient: vi.fn() } } };
+        window.paypal = { Googlepay: () => googlepay };
+
+        const container = document.createElement( 'div' );
+        const mounting  = mountGooglePay( container, clientConfig( { components: [ 'googlepay' ] } ), { onIneligible } );
+
+        finishLoading( sdkScripts()[ 0 ], window.paypal );
+        finishScript( GOOGLE_PAY_SDK_URL );
+
+        expect( ( await mounting ).eligible ).toBe( false );
+        expect( onIneligible ).toHaveBeenCalled();
+        expect( window.google.payments.api.PaymentsClient ).not.toHaveBeenCalled();
+    } );
+
+    it( 'gives the button the store\'s language', async () => {
+        const { client } = await mount();
+
+        expect( client.createButton ).toHaveBeenCalledWith( expect.objectContaining( { buttonLocale: 'en' } ) );
     } );
 
     it( 'reports a closed sheet as a cancel and anything else as an error', async () => {

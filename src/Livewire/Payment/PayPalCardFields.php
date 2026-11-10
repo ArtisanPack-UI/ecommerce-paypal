@@ -31,8 +31,10 @@ use Livewire\Attributes\Locked;
  * The number, expiry, security code, and name fields are PayPal-hosted
  * iframes mounted by `paypal-checkout.js` inside `wire:ignore`, so card data
  * never enters this component, its properties, or a Livewire request (the
- * store stays SAQ-A). Each field has a visible label and an inline error,
- * announced as the shopper leaves it. "Pay now" submits the fields, which
+ * store stays SAQ-A). Each field has a visible label and an inline error
+ * that appears (and is announced politely) when the shopper leaves the
+ * field with an invalid value; "Pay now" with invalid details names the
+ * fields to check in words. "Pay now" submits the fields, which
  * runs 3-D Secure (`methods.card.three_d_secure`) in PayPal's modal, and is
  * disabled while that runs. {@see PayPalPaymentDriver::confirm()} then
  * refuses a liability shift of `NO` / `UNKNOWN` when
@@ -251,22 +253,23 @@ class PayPalCardFields extends PayPalPaymentDriver
     public function render(): View
     {
         $savedCards = $this->savedCards();
+        $fields     = [
+            'name'   => __( 'Name on card' ),
+            'number' => __( 'Card number' ),
+            'expiry' => __( 'Expiration date' ),
+            'cvv'    => __( 'Security code' ),
+        ];
 
         return view( 'ecommerce-paypal::livewire.payment.paypal-card-fields', [
             'available'  => $this->available(),
             'canSave'    => $this->vaultAvailable(),
             'savedCards' => $savedCards,
             'usingSaved' => [] !== $savedCards && self::NEW_CARD !== $this->savedCard,
-            'fields'     => [
-                'name'   => __( 'Name on card' ),
-                'number' => __( 'Card number' ),
-                'expiry' => __( 'Expiration date' ),
-                'cvv'    => __( 'Security code' ),
-            ],
-            'paypal'    => $this->scriptSettings( [
+            'fields'     => $fields,
+            'paypal'     => $this->scriptSettings( [
                 'loadFailed' => __( 'The card form couldn\'t load. Check your connection and reload the page.' ),
                 'failed'     => __( 'Your card payment couldn\'t be completed. Check your details or use another payment method.' ),
-                'invalid'    => __( 'Check the highlighted card details.' ),
+                'invalid'    => __( 'Check these card details: :fields.' ),
                 'ineligible' => __( 'Card payments aren\'t available for this order. Choose another payment method.' ),
                 'processing' => __( 'Processing your card. Your bank may ask you to verify it.' ),
                 'fields'     => [
@@ -275,6 +278,8 @@ class PayPalCardFields extends PayPalPaymentDriver
                     'expiry' => __( 'Enter a valid expiration date.' ),
                     'cvv'    => __( 'Enter a valid security code.' ),
                 ],
+            ], [
+                'labels' => $fields,
             ] ),
         ] );
     }

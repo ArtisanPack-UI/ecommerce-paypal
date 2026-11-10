@@ -8,6 +8,7 @@ use ArtisanPackUI\Ecommerce\Registries\SettingsRegistry;
 use ArtisanPackUI\Ecommerce\Settings\SettingsRepository;
 use ArtisanPackUI\EcommercePayPal\EcommercePayPalServiceProvider;
 use ArtisanPackUI\EcommercePayPal\Settings\PayPalSettings;
+use ArtisanPackUI\EcommercePayPal\Support\ApplePayDomainAssociation;
 use ArtisanPackUI\EcommercePayPal\Testing\PayPalFake;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
@@ -226,6 +227,23 @@ it( 'refuses Apple Pay without a domain association file', function (): void {
     expect( paypalSettingErrors( [ 'paypal.methods.apple_pay.enabled' => true ] ) )->toBe( [ 'paypal-apple-pay-domain-missing' ] )
         ->and( paypalSettingErrors( [ 'paypal.methods.apple_pay.enabled' => true, 'paypal.methods.apple_pay.domain_association' => 'https://example.com/file' ] ) )->toBe( [] );
 } );
+
+it( 'refuses a domain association setting that can\'t be used', function ( string $value ): void {
+    expect( paypalSettingErrors( [ 'paypal.methods.apple_pay.domain_association' => $value ] ) )->toBe( [ 'paypal-apple-pay-domain-invalid' ] );
+} )->with( [
+    'non-hex contents' => [ 'not the association file' ],
+    'plain http url'   => [ 'http://files.example/association' ],
+    'missing file'     => [ '/nowhere/' . ApplePayDomainAssociation::FILE_NAME ],
+    'another file'     => [ '/etc/hosts' ],
+] );
+
+it( 'accepts a usable domain association setting, or none', function ( string $value ): void {
+    expect( paypalSettingErrors( [ 'paypal.methods.apple_pay.domain_association' => $value ] ) )->toBe( [] );
+} )->with( [
+    'hex contents' => [ '7B227073704964223A2230313233343536373839414243444546' ],
+    'https url'    => [ 'https://files.example/association' ],
+    'empty'        => [ '' ],
+] );
 
 it( 'checks the combined state, including keys from other writes', function (): void {
     $this->settings->update( 'paypal', [ 'paypal.methods.paypal.enabled' => false, 'paypal.methods.card.enabled' => true, 'paypal.vault.enabled' => true ] );

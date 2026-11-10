@@ -118,6 +118,19 @@ class SavedPaymentMethods extends Component
     }
 
     /**
+     * Closes the confirmation without deleting anything.
+     *
+     * @since 1.0.0
+     *
+     * @return void
+     */
+    public function cancelDelete(): void
+    {
+        $this->confirmingDelete = false;
+        $this->deletingId       = null;
+    }
+
+    /**
      * Deletes the confirmed method at PayPal, then here.
      *
      * @since 1.0.0

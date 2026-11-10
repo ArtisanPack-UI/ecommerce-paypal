@@ -191,7 +191,11 @@ final class PayPalSettings
      * - `paypal-vault-unavailable` — saved payment methods are on, but
      *   neither PayPal nor cards are;
      * - `paypal-apple-pay-domain-missing` — Apple Pay is on without a domain
-     *   association file.
+     *   association file;
+     * - `paypal-apple-pay-domain-invalid` — the domain association setting
+     *   is set but can't be used: a path that isn't a readable
+     *   `apple-developer-merchantid-domain-association` file, a plain-HTTP
+     *   URL, or contents that aren't Apple's hex.
      *
      * @since 1.0.0
      *
@@ -242,6 +246,17 @@ final class PayPalSettings
                     'field'   => self::key( 'methods.apple_pay.enabled' ),
                     'code'    => 'paypal-apple-pay-domain-missing',
                     'message' => __( 'Apple Pay needs the domain association file from the PayPal dashboard. Add it before enabling Apple Pay.' ),
+                ];
+            }
+
+            $association = trim( (string) $value( 'methods.apple_pay.domain_association' ) );
+            $source      = '' === $association ? null : ApplePayDomainAssociation::sourceOf( $association );
+
+            if ( 'none' === $source || ( 'contents' === $source && ! ApplePayDomainAssociation::isAssociation( $association ) ) ) {
+                $errors[] = [
+                    'field'   => self::key( 'methods.apple_pay.domain_association' ),
+                    'code'    => 'paypal-apple-pay-domain-invalid',
+                    'message' => __( 'The Apple Pay domain association must be the file\'s contents, an absolute path to apple-developer-merchantid-domain-association, or an HTTPS URL.' ),
                 ];
             }
 
