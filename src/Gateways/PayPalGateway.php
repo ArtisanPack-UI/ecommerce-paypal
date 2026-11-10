@@ -834,10 +834,11 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
      * Whether a card or wallet payment whose 3-D Secure result is `$shift`
      * must be refused: `methods.card.require_liability_shift` is on and the
      * result is `NO` or `UNKNOWN` (spec §9.4). With
-     * `methods.card.three_d_secure` set to `SCA_ALWAYS`, a card (`card`
-     * source) with no result at all is refused too, unless it is a saved
-     * card paying (`$vaulted`). PayPal-wallet payments are never refused
-     * here.
+     * `methods.card.three_d_secure` set to `SCA_ALWAYS` and card fields on,
+     * a card (`card` source) with no result at all is refused too, unless it
+     * is a saved card paying (`$vaulted`). PayPal-wallet payments, and
+     * PayPal's guest-card button while card fields are off, are never
+     * refused for a missing result.
      *
      * Apple Pay and Google Pay aren't held to `SCA_ALWAYS`: the setting is
      * only sent to PayPal for card fields, so a wallet with no result
@@ -863,12 +864,15 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
             return true;
         }
 
-        // `SCA_ALWAYS` asks PayPal to authenticate every card, so a card
-        // with no result skipped it. Saved cards are exempt: a customer-
-        // initiated vaulted payment runs no 3-D Secure.
+        // `SCA_ALWAYS` asks PayPal to authenticate every card paid through
+        // card fields, so a card with no result skipped it. Saved cards are
+        // exempt: a customer-initiated vaulted payment runs no 3-D Secure.
+        // While card fields are off, a card can only be PayPal's guest-card
+        // button, which was never asked for 3-D Secure.
         return '' === $shift
             && 'card' === $source
             && ! $vaulted
+            && (bool) config( 'artisanpack.ecommerce-paypal.methods.card.enabled', false )
             && 'SCA_ALWAYS' === strtoupper( (string) config( 'artisanpack.ecommerce-paypal.methods.card.three_d_secure', 'SCA_WHEN_REQUIRED' ) );
     }
 

@@ -252,7 +252,20 @@ final class PayPalSettings
             $association = trim( (string) $value( 'methods.apple_pay.domain_association' ) );
             $source      = '' === $association ? null : ApplePayDomainAssociation::sourceOf( $association );
 
-            if ( 'none' === $source || ( 'contents' === $source && ! ApplePayDomainAssociation::isAssociation( $association ) ) ) {
+            // A local file (the configured path, or the published file an
+            // empty setting falls back to) must hold Apple's contents, or
+            // the public route answers 404.
+            $file = 'file' === $source ? $association : null;
+
+            if ( '' === $association && (bool) $value( 'methods.apple_pay.enabled' ) && is_file( ApplePayDomainAssociation::publishedPath() ) ) {
+                $file = ApplePayDomainAssociation::publishedPath();
+            }
+
+            if (
+                'none' === $source
+                || ( 'contents' === $source && ! ApplePayDomainAssociation::isAssociation( $association ) )
+                || ( null !== $file && ! ApplePayDomainAssociation::fileHoldsAssociation( $file ) )
+            ) {
                 $errors[] = [
                     'field'   => self::key( 'methods.apple_pay.domain_association' ),
                     'code'    => 'paypal-apple-pay-domain-invalid',

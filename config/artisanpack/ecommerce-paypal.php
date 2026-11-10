@@ -87,7 +87,7 @@ return [
 
     'webhook_verification' => env( 'PAYPAL_WEBHOOK_VERIFICATION', 'local' ),
 
-    'webhook_tolerance_seconds' => (int) env( 'PAYPAL_WEBHOOK_TOLERANCE_SECONDS', 259200 ),
+    'webhook_tolerance_seconds' => env( 'PAYPAL_WEBHOOK_TOLERANCE_SECONDS', 259200 ),
 
     /*
     |--------------------------------------------------------------------------

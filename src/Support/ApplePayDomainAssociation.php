@@ -194,6 +194,23 @@ class ApplePayDomainAssociation
     }
 
     /**
+     * Whether the file at `$path` is readable and holds Apple's domain
+     * association ({@see self::isAssociation()}).
+     *
+     * @since 1.0.0
+     *
+     * @param  string  $path  Path.
+     *
+     * @return bool
+     */
+    public static function fileHoldsAssociation( string $path ): bool
+    {
+        $contents = is_file( $path ) && is_readable( $path ) ? file_get_contents( $path ) : false;
+
+        return false !== $contents && self::isAssociation( trim( $contents ) );
+    }
+
+    /**
      * The trimmed setting.
      *
      * @since 1.0.0

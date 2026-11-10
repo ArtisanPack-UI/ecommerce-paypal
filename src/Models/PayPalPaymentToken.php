@@ -190,7 +190,7 @@ class PayPalPaymentToken extends Model
      *
      * @since 1.0.0
      *
-     * @return Builder<PayPalPaymentToken>
+     * @return Builder<static>
      */
     public function prunable(): Builder
     {

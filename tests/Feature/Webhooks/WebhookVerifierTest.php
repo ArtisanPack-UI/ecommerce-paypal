@@ -272,6 +272,14 @@ describe( 'request checks', function (): void {
         'from the future'     => [ 360, false ],
     ] );
 
+    it( 'falls back to the default window for a value that isn\'t a number, instead of turning the check off', function (): void {
+        config( [ 'artisanpack.ecommerce-paypal.webhook_tolerance_seconds' => 'three days' ] );
+        $time = CarbonImmutable::now()->utc()->subDays( 10 )->format( 'Y-m-d\TH:i:s\Z' );
+
+        expect( WebhookVerifier::toleranceSeconds() )->toBe( 259200 )
+            ->and( verifyPayPalDelivery( signedPayPalDelivery( $this->identity, [ 'PAYPAL-TRANSMISSION-TIME' => $time ] ) )->errorCode )->toBe( 'stale_transmission' );
+    } );
+
     it( 'skips the time check when the window is 0, but still needs a readable time', function (): void {
         config( [ 'artisanpack.ecommerce-paypal.webhook_tolerance_seconds' => 0 ] );
         $time = CarbonImmutable::now()->utc()->subDays( 10 )->format( 'Y-m-d\TH:i:s\Z' );

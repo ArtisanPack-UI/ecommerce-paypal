@@ -3,6 +3,7 @@
 declare( strict_types=1 );
 
 use ArtisanPackUI\Ecommerce\Checkout\CheckoutState;
+use ArtisanPackUI\Ecommerce\Events\PaymentFailed;
 use ArtisanPackUI\Ecommerce\Models\Cart;
 use ArtisanPackUI\Ecommerce\Models\InboundWebhookDelivery;
 use ArtisanPackUI\Ecommerce\Models\Order;
@@ -20,6 +21,7 @@ use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalEventMapper;
 use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalWebhookProcessor;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
@@ -459,6 +461,27 @@ describe( 'pending captures', function (): void {
             ->and( $order->fresh()->payment_status )->toBe( 'failed' );
 
         Exceptions::assertReported( fn ( RuntimeException $exception ): bool => 'listener failed' === $exception->getMessage() );
+    } );
+
+    it( 'still fires captureDenied when an engine PaymentFailed listener throws', function (): void {
+        Exceptions::fake();
+        $order  = webhookPaidOrder( 'paypal', [ 'capture_status' => 'PENDING' ] );
+        $denied = 0;
+        Event::listen( PaymentFailed::class, function (): void {
+            throw new RuntimeException( 'payment.failed listener broke' );
+        } );
+        addAction( CaptureEventHandler::DENIED_HOOK, function () use ( &$denied ): void {
+            $denied++;
+        } );
+        respondToWebhookCalls( $this->paypal, 'payments.captures.get', Orders::body( 'payments/capture', [ 'status' => 'DENIED' ] ) );
+        $event = [ 'id' => 'WH-DENIED-EVT', 'event_type' => 'PAYMENT.CAPTURE.DENIED', 'resource' => [ 'id' => Orders::CAPTURE_ID ] ];
+
+        ( new ProcessPayPalWebhook( $event ) )->handle( app( PayPalWebhookProcessor::class ) );
+
+        expect( $denied )->toBe( 1 )
+            ->and( $order->fresh()->payment_status )->toBe( 'failed' );
+
+        Exceptions::assertReported( fn ( RuntimeException $exception ): bool => 'payment.failed listener broke' === $exception->getMessage() );
     } );
 
     it( 'keeps a completed capture completed when PAYMENT.CAPTURE.PENDING is processed after it', function (): void {

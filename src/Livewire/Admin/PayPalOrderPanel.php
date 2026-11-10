@@ -20,6 +20,7 @@ use ArtisanPackUI\Ecommerce\Models\Order;
 use ArtisanPackUI\EcommercePayPal\EcommercePayPalServiceProvider;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalEnvironment;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalOrderMeta;
+use ArtisanPackUI\EcommercePayPal\Webhooks\Handlers\DisputeEventHandler;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
@@ -290,15 +291,12 @@ class PayPalOrderPanel extends Component
      */
     public static function disputeOutcome( string $outcome ): string
     {
+        // The same wording as the dispute note, so an outcome reads the
+        // same in the panel and in the order's notes.
         return match ( $outcome ) {
-            'RESOLVED_BUYER_FAVOUR'  => __( 'In the buyer\'s favor' ),
-            'RESOLVED_SELLER_FAVOUR' => __( 'In your favor' ),
-            'RESOLVED_WITH_PAYOUT'   => __( 'With a payout from PayPal' ),
-            'CANCELED_BY_BUYER'      => __( 'Canceled by the buyer' ),
-            'ACCEPTED'               => __( 'Accepted (the buyer was refunded)' ),
-            'DENIED'                 => __( 'Denied' ),
-            'NONE'                   => __( 'None' ),
-            default                  => self::headline( $outcome ),
+            'RESOLVED_BUYER_FAVOUR', 'RESOLVED_SELLER_FAVOUR', 'RESOLVED_WITH_PAYOUT', 'CANCELED_BY_BUYER', 'ACCEPTED', 'DENIED' => Str::ucfirst( DisputeEventHandler::outcomeLabel( $outcome ) ),
+            'NONE'                                                                                                               => __( 'None' ),
+            default                                                                                                              => self::headline( $outcome ),
         };
     }
 

@@ -134,6 +134,7 @@ it( 'labels every documented PayPal value', function (): void {
         ->and( PayPalOrderPanel::disputeReason( 'MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED' ) )->toBe( 'Item not as described' )
         ->and( PayPalOrderPanel::disputeReason( 'CANCELED_RECURRING_BILLING' ) )->toBe( 'Canceled recurring billing' )
         ->and( PayPalOrderPanel::disputeOutcome( 'RESOLVED_BUYER_FAVOUR' ) )->toBe( 'In the buyer\'s favor' )
+        ->and( PayPalOrderPanel::disputeOutcome( 'ACCEPTED' ) )->toBe( 'Accepted (the buyer was refunded)' )
         ->and( PayPalOrderPanel::disputeOutcome( 'NONE' ) )->toBe( 'None' )
         ->and( PayPalOrderPanel::authorizationStatus( 'VOIDED' ) )->toBe( 'Voided' );
 } );

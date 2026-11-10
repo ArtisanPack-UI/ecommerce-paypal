@@ -470,7 +470,17 @@ describe( 'cart check', function (): void {
 
 describe( 'liability shift policy under SCA_ALWAYS', function (): void {
     beforeEach( function (): void {
-        config( [ 'artisanpack.ecommerce-paypal.methods.card.three_d_secure' => 'SCA_ALWAYS' ] );
+        config( [
+            'artisanpack.ecommerce-paypal.methods.card.three_d_secure' => 'SCA_ALWAYS',
+            'artisanpack.ecommerce-paypal.methods.card.enabled'        => true,
+        ] );
+    } );
+
+    it( 'does not hold PayPal\'s guest-card button to SCA_ALWAYS while card fields are off', function (): void {
+        config( [ 'artisanpack.ecommerce-paypal.methods.card.enabled' => false ] );
+        $this->paypal->respond( 'orders.get', Orders::approvedCard( null ) );
+
+        expect( app( PayPalWalletGateway::class )->capturePayment( Orders::create(), Orders::session() )->success )->toBeTrue();
     } );
 
     it( 'refuses a card that ran no 3-D Secure', function (): void {
