@@ -54,6 +54,14 @@ jobs:
             exit 1
           fi
 
+          # A dev branch constraint (the engine's dev-release/1.x during
+          # development) must be replaced by a stable one before tagging.
+          dev=$(jq -r '.require | to_entries[] | select(.value | test("dev-")) | .key' composer.json)
+          if [ -n "$dev" ]; then
+            echo "::error::composer.json require has dev constraints: $dev"
+            exit 1
+          fi
+
   test:
     needs: preflight
     runs-on: ubuntu-latest
