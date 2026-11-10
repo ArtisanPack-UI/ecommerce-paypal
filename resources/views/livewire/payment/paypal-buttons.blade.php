@@ -56,10 +56,23 @@
 
         const focusHeading = () => document.getElementById( settings.heading )?.focus();
 
-        // PayPal's window has closed, so focus would be left on the page
-        // body: move it to the step heading, then announce the error.
+        // Focus is lost when it sits on the page body or on an element that
+        // has since left the page.
+        const focusLost = () => {
+            const active = document.activeElement;
+
+            return ! active || active === document.body || ! active.isConnected;
+        };
+
+        // When PayPal's window closes it can leave focus on the page body:
+        // move it to the step heading. A failure that arrives while the
+        // shopper is on another control (a failed "save" update, say)
+        // leaves their focus alone. Either way the error is announced.
         $wire.on( 'payment-failed', ( event ) => {
-            focusHeading();
+            if ( focusLost() ) {
+                focusHeading();
+            }
+
             announce( errorBox, event?.message || settings.messages.failed );
         } );
 

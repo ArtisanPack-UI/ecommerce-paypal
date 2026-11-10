@@ -259,5 +259,6 @@
     "It will be removed from PayPal and from your account.": "Se eliminará de PayPal y de tu cuenta.",
     ":method will be removed from PayPal and from your account.": ":method se eliminará de PayPal y de tu cuenta.",
     "Cancel": "Cancelar",
-    "Remove payment method": "Eliminar método de pago"
+    "Remove payment method": "Eliminar método de pago",
+    "Also allow your nonce (or 'unsafe-inline') in script-src and style-src. The checkout module gives PayPal's script the nonce of your page's scripts.": "Permita también su nonce (o 'unsafe-inline') en script-src y style-src. El módulo de pago da al script de PayPal el nonce de los scripts de su página."
 }

@@ -138,12 +138,13 @@
         const fieldState = ( state, field ) => state?.fields?.[ stateKeys[ field ] ];
 
         // After a failure (including PayPal's 3-D Secure window closing),
-        // focus goes back to the button the shopper pressed, unless they
-        // have already moved it somewhere else on the page.
+        // focus goes back to the button the shopper pressed, but only when
+        // it was lost (on the page body, or on an element that has left the
+        // page). Focus the shopper moved to another control stays there.
         const restoreFocus = ( button ) => {
             const active = document.activeElement;
 
-            if ( button && ( ! active || active === document.body || ! root.contains( active ) ) ) {
+            if ( button && ( ! active || active === document.body || ! active.isConnected ) ) {
                 button.focus();
             }
         };

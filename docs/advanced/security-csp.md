@@ -6,30 +6,36 @@ title: Security and CSP
 
 ## PCI scope
 
-Card data is entered in PayPal-hosted iframes (card fields) or in Apple's and Google's payment sheets, and goes straight to PayPal. It never enters a Livewire component, a request to your server, your logs, or your database, so the store stays in **PCI DSS SAQ-A** scope. Saved payment methods are PayPal vault references plus display data (brand, last digits, expiry, email); no card number or CVV is stored. The engine's `ecommerce:lint:pci-columns` check covers the package's migrations.
+Card data is entered in PayPal-hosted iframes (card fields) or in Apple's and Google's payment sheets, and goes straight to PayPal. It never enters a Livewire component, a request to your server, your logs, or your database. That design is meant to support a **PCI DSS SAQ A** assessment, but hosted fields alone don't make a store eligible: you also have to meet SAQ A's other criteria, including protecting the payment page's scripts against tampering (for example with a Content-Security-Policy and script integrity monitoring). Confirm your eligibility with your acquirer. Saved payment methods are PayPal vault references plus display data (brand, last digits, expiry, email); no card number or CVV is stored. The engine's `ecommerce:lint:pci-columns` check covers the package's migrations.
 
 The client config sent to the browser holds only public values: the client id, the PayPal Order id, amounts, and display options. The client secret never leaves the server, and the settings screen never shows it.
 
 ## Content-Security-Policy
 
-If your site sends a Content-Security-Policy, allow these sources (the install command prints them):
+If your site sends a Content-Security-Policy, allow these sources (the install command prints them). They follow PayPal's [JS SDK v5 CSP guidance](https://developer.paypal.com/sdk/js/v5/best-practices/), plus the Apple Pay and Google Pay scripts the wallets load:
 
 | Directive | Sources | Why |
 | --- | --- | --- |
-| `script-src` | `https://www.paypal.com`, `https://*.paypal.com`, `https://applepay.cdn-apple.com`, `https://pay.google.com` | PayPal's JS SDK, Apple's Apple Pay SDK, Google's `pay.js` |
-| `frame-src` | `https://*.paypal.com`, `https://pay.google.com` | PayPal's buttons, card fields, 3-D Secure, and checkout windows; Google Pay |
-| `connect-src` | `https://*.paypal.com` | SDK calls to PayPal |
-| `img-src` | `https://*.paypalobjects.com` | PayPal's logos and button images |
+| `script-src` | `https://*.paypal.com`, `https://*.paypalobjects.com`, `https://*.venmo.com`, `https://applepay.cdn-apple.com`, `https://pay.google.com`, and your nonce (or `'unsafe-inline'`) | PayPal's JS SDK, Apple's Apple Pay SDK, Google's `pay.js` |
+| `style-src` | `https://*.paypal.com`, `https://*.paypalobjects.com`, `https://*.venmo.com`, and your nonce (or `'unsafe-inline'`) | The styles PayPal's SDK adds |
+| `connect-src` | `https://*.paypal.com`, `https://*.paypalobjects.com`, `https://*.venmo.com` | SDK calls to PayPal |
+| `frame-src` | `https://*.paypal.com`, `https://*.paypalobjects.com`, `https://*.venmo.com`, `https://pay.google.com` | PayPal's buttons, card fields, 3-D Secure, and checkout windows; Google Pay |
+| `child-src` | `https://*.paypal.com`, `https://*.paypalobjects.com`, `https://*.venmo.com` | The same frames, for browsers that read `child-src` |
+| `img-src` | `https://*.paypal.com`, `https://*.paypalobjects.com`, `https://*.venmo.com`, `data:` | PayPal's logos and button images |
+
+With a nonce, which PayPal recommends over `'unsafe-inline'`:
 
 ```text
 Content-Security-Policy:
-  script-src 'self' https://www.paypal.com https://*.paypal.com https://applepay.cdn-apple.com https://pay.google.com;
-  frame-src 'self' https://*.paypal.com https://pay.google.com;
-  connect-src 'self' https://*.paypal.com;
-  img-src 'self' data: https://*.paypalobjects.com
+  script-src 'self' 'nonce-RANDOM' https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com https://applepay.cdn-apple.com https://pay.google.com;
+  style-src 'self' 'nonce-RANDOM' https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com;
+  connect-src 'self' https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com;
+  frame-src 'self' https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com https://pay.google.com;
+  child-src 'self' https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com;
+  img-src 'self' data: https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com
 ```
 
-Keep your existing sources (Livewire, Vite, fonts) alongside these. The Apple Pay and Google Pay sources are only needed when those methods are on. PayPal may add hosts over time; if the browser console shows a CSP violation from a PayPal domain, add it and check PayPal's [CSP guidance](https://developer.paypal.com/sdk/js/configuration/).
+Keep your existing sources (Livewire, Vite, fonts) alongside these. The Apple Pay and Google Pay sources are only needed when those methods are on. PayPal also recommends `Cross-Origin-Opener-Policy: same-origin-allow-popups`, so its checkout window can talk to your page. PayPal may add hosts over time; if the browser console shows a CSP violation from a PayPal domain, add it and check PayPal's guidance.
 
 ### With `spatie/laravel-csp` (v2)
 
@@ -44,17 +50,27 @@ class StorePolicy extends Basic
         parent::configure();
 
         $this
-            ->addDirective( Directive::SCRIPT, [ 'https://www.paypal.com', 'https://*.paypal.com', 'https://applepay.cdn-apple.com', 'https://pay.google.com' ] )
-            ->addDirective( Directive::FRAME, [ 'https://*.paypal.com', 'https://pay.google.com' ] )
-            ->addDirective( Directive::CONNECT, [ 'https://*.paypal.com' ] )
-            ->addDirective( Directive::IMG, [ 'https://*.paypalobjects.com' ] );
+            ->addDirective( Directive::SCRIPT, [ 'https://*.paypal.com', 'https://*.paypalobjects.com', 'https://*.venmo.com', 'https://applepay.cdn-apple.com', 'https://pay.google.com' ] )
+            ->addDirective( Directive::STYLE, [ 'https://*.paypal.com', 'https://*.paypalobjects.com', 'https://*.venmo.com' ] )
+            ->addDirective( Directive::CONNECT, [ 'https://*.paypal.com', 'https://*.paypalobjects.com', 'https://*.venmo.com' ] )
+            ->addDirective( Directive::FRAME, [ 'https://*.paypal.com', 'https://*.paypalobjects.com', 'https://*.venmo.com', 'https://pay.google.com' ] )
+            ->addDirective( Directive::CHILD, [ 'https://*.paypal.com', 'https://*.paypalobjects.com', 'https://*.venmo.com' ] )
+            ->addDirective( Directive::IMG, [ 'https://*.paypal.com', 'https://*.paypalobjects.com', 'https://*.venmo.com', 'data:' ] )
+            ->addNonceForDirective( Directive::STYLE );
     }
 }
 ```
 
-### Inline scripts
+`Basic` already adds a nonce to `script-src`; `addNonceForDirective( Directive::STYLE )` adds it to `style-src`, which PayPal's SDK needs.
 
-The Livewire drivers and the live Pay Later message use Livewire's `@script` blocks; the Pay Later Blade component prints an inline `<script type="module">`. With a nonce-based `script-src`, make sure those are covered the same way as the rest of your Livewire pages.
+### Nonces
+
+With a nonce-based policy:
+
+- **PayPal's SDK script.** `paypal-checkout.js` adds the SDK `<script>` with the page's nonce as both `nonce` and PayPal's `data-csp-nonce`, which PayPal uses for the styles it adds. It takes the nonce from the `csp_nonce` client option when a React or Vue wrapper passes one. Otherwise it reuses the nonce of a script already on the page, such as Livewire's or Vite's (`Vite::useCspNonce()`). The Apple Pay and Google Pay scripts it loads get the same nonce.
+- **Inline blocks.** The Livewire drivers and the live Pay Later message use Livewire's `@script` blocks, and the Pay Later Blade component prints an inline `<script type="module">`. Give Livewire your nonce the same way as on the rest of your Livewire pages.
+
+If no script on the page carries a nonce and none is passed, the SDK script gets none, and a nonce-only `script-src` blocks it.
 
 ## Webhook security
 
@@ -65,7 +81,7 @@ The Livewire drivers and the live Pay Later message use Livewire's `@script` blo
 
 ## The Apple Pay route
 
-`/.well-known/apple-developer-merchantid-domain-association` is public. A configured path must be named `apple-developer-merchantid-domain-association`, only HTTPS URLs are fetched (without following redirects), and a file or URL is served only when it looks like Apple's hex file. This keeps a mistaken setting from publishing another file or an internal service's response.
+`/.well-known/apple-developer-merchantid-domain-association` is public. A configured path must be named `apple-developer-merchantid-domain-association`, only HTTPS URLs are fetched (without following redirects), and a file or URL is served only when it looks like Apple's hex file. This keeps a mistaken setting from publishing an arbitrary file, but it can't prove a response came from Apple: any HTTPS endpoint that answers with a long hex string would be served publicly. Only configure a URL you control and trust, such as your own storage bucket.
 
 ## Logging and redaction
 

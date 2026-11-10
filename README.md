@@ -1,6 +1,6 @@
 # ArtisanPack UI Ecommerce PayPal
 
-The PayPal gateway for the [ArtisanPack UI ecommerce engine](https://github.com/ArtisanPack-UI/ecommerce): PayPal, Pay Later, and Venmo buttons, advanced card fields with 3-D Secure, Apple Pay, and Google Pay through PayPal's Orders v2 API, with signature-verified webhooks and saved payment methods. Card data is collected by PayPal's SDK only and never reaches your server (SAQ-A).
+The PayPal gateway for the [ArtisanPack UI ecommerce engine](https://github.com/ArtisanPack-UI/ecommerce): PayPal, Pay Later, and Venmo buttons, advanced card fields with 3-D Secure, Apple Pay, and Google Pay through PayPal's Orders v2 API, with signature-verified webhooks and saved payment methods. Card data is collected by PayPal's SDK only and never reaches your server, which is designed to support a PCI DSS SAQ A assessment. Eligibility also depends on the rest of your payment page, so confirm it with your acquirer (see [Security and CSP](docs/advanced/security-csp.md)).
 
 It registers four gateways with the engine (`paypal`, `paypal-card`, `paypal-apple-pay`, `paypal-google-pay`). With [`ecommerce-storefront-livewire`](https://github.com/ArtisanPack-UI/ecommerce-storefront-livewire) installed it also ships the Livewire payment UI and a saved payment methods account page; React and Vue storefronts use its framework-agnostic JS module.
 
@@ -39,21 +39,23 @@ PAYPAL_CLIENT_ID=your-client-id
 PAYPAL_CLIENT_SECRET=your-secret
 ```
 
-Register the webhook and check the setup:
+Register the webhook:
 
 ```bash
 php artisan ecommerce-paypal:webhooks:register
-php artisan ecommerce-paypal:verify-credentials
 ```
 
-Then set the webhook id the first command printed, and turn PayPal on:
+Set the webhook id it printed, then check the setup:
 
 ```dotenv
 PAYPAL_WEBHOOK_ID=the-printed-id
-PAYPAL_ENABLED=true
 ```
 
-PayPal now appears at checkout. Turn on cards, Apple Pay, Google Pay, Pay Later messages, and saved payment methods in the config or the store settings.
+```bash
+php artisan ecommerce-paypal:verify-credentials
+```
+
+Then turn PayPal on with `PAYPAL_ENABLED=true`. PayPal now appears at checkout. Turn on cards, Apple Pay, Google Pay, Pay Later messages, and saved payment methods in the config or the store settings.
 
 ## Documentation
 

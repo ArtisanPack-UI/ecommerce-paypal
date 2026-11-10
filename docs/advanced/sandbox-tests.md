@@ -22,11 +22,7 @@ Events come from PayPal's `GET /v1/notifications/webhooks-events`, because CI ha
 ## Running it
 
 1. Create a sandbox REST app in the PayPal developer dashboard with **Advanced Credit and Debit Card Payments** on.
-2. Give the app a webhook subscribed to the package's events. PayPal records events only for subscribed webhooks, but never needs to reach the URL, so any HTTPS URL works:
-
-   ```bash
-   php artisan ecommerce-paypal:webhooks:register --url=https://example.com/ecommerce/webhooks/paypal
-   ```
+2. Give the app a webhook subscribed to the package's events. PayPal records events only for subscribed webhooks, but never needs to reach the URL, so any HTTPS URL works. The package checkout has no `artisan`, so add it in the developer dashboard: open the app, choose **Add Webhook**, enter a URL such as `https://example.com/ecommerce/webhooks/paypal`, and tick the events in `src/Webhooks/PayPalWebhookEvents.php` (`SUBSCRIBED`). From a host Laravel app set to the sandbox app's credentials (`PAYPAL_MODE=sandbox`, `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`), `php artisan ecommerce-paypal:webhooks:register --url=https://example.com/ecommerce/webhooks/paypal` does the same.
 
 3. Run the suite:
 

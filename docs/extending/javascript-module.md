@@ -123,13 +123,14 @@ Outside checkout there is no session, so get the config from your server: build 
 | --- | --- |
 | `loadSdk( config, { components } )` | Loads the SDK once and resolves with its namespace. Calls with the same client id, currency, intent, locale, funding, `user_id_token`, and `partner_attribution_id` share one script; when a later call needs more components, a second script loads under its own `data-namespace` |
 | `resetSdk()` | Forgets every load (tests, hot module reloading) |
-| `loadScript( src )` | Loads a third-party script once per page |
+| `loadScript( src )` | Loads a third-party script once per page, with the page's CSP nonce |
+| `cspNonce( override )` | The CSP nonce scripts get: `override`, else the nonce of a script already on the page, else empty |
 | `sdkParams( config, components )` / `sdkUrl( config, components )` | The SDK query string / URL for a config |
 | `orderIdOf( config )` | The PayPal Order id (`options.order_id`, else `client_secret`) |
 | `cardFieldStyle( element )` | A card field style from the page's daisyUI tokens (`--color-base-content`, `--color-error`) and font |
 | `SDK_URL`, `APPLE_PAY_SDK_URL`, `GOOGLE_PAY_SDK_URL` | Script URLs |
 
-The SDK query string carries `client-id`, `components`, `currency`, `intent`, `commit=true`, and, when set, `locale`, `enable-funding`, `disable-funding`, and `buyer-country` (sandbox only, from `options.buyer_country`). `options.user_id_token` and `options.partner_attribution_id` become `data-user-id-token` and `data-partner-attribution-id`. Add the last three with the `ap.ecommerce.paypal.clientOptions` filter if you need them.
+The SDK query string carries `client-id`, `components`, `currency`, `intent`, `commit=true`, and, when set, `locale`, `enable-funding`, `disable-funding`, and `buyer-country` (sandbox only, from `options.buyer_country`). `options.user_id_token` and `options.partner_attribution_id` become `data-user-id-token` and `data-partner-attribution-id`. Add the last three with the `ap.ecommerce.paypal.clientOptions` filter if you need them. The page's CSP nonce (or `options.csp_nonce`) becomes `nonce` and `data-csp-nonce`; see [Security and CSP](Advanced-Security-Csp#nonces).
 
 ## React example
 
@@ -140,18 +141,33 @@ export function PayPalButtons( { client, onApproved, onFailed } ) {
     const ref = useRef( null );
 
     useEffect( () => {
-        let mounted = null;
+        let mounted  = null;
+        let disposed = false;
 
-        import( '/vendor/ecommerce-paypal/paypal-checkout.js' ).then( async ( paypal ) => {
-            mounted = await paypal.mountButtons( ref.current, client, {
+        import( '/vendor/ecommerce-paypal/paypal-checkout.js' )
+            .then( ( paypal ) => paypal.mountButtons( ref.current, client, {
                 onApprove: ( data ) => onApproved( data.orderID ),
                 onCancel: () => {},
                 onError: () => onFailed(),
                 onIneligible: () => onFailed( 'ineligible' ),
-            } );
-        } );
+            } ) )
+            .then( ( handle ) => {
+                // The component may have unmounted while PayPal loaded.
+                if ( disposed ) {
+                    handle?.close();
 
-        return () => mounted?.close();
+                    return;
+                }
+
+                mounted = handle;
+            } )
+            // The SDK couldn't load (offline, blocked by CSP, …).
+            .catch( () => disposed || onFailed( 'load_failed' ) );
+
+        return () => {
+            disposed = true;
+            mounted?.close();
+        };
     }, [ client.options.order_id ] );
 
     return <div ref={ ref } role="group" aria-label="Pay with PayPal" />;
@@ -166,20 +182,44 @@ import { onBeforeUnmount, onMounted, ref } from 'vue';
 
 const props = defineProps( { client: Object } );
 const emit  = defineEmits( [ 'approved', 'failed' ] );
-const el    = ref( null );
-let mounted = null;
+const el     = ref( null );
+let mounted  = null;
+let disposed = false;
 
 onMounted( async () => {
-    const paypal = await import( '/vendor/ecommerce-paypal/paypal-checkout.js' );
+    let handle = null;
 
-    mounted = await paypal.mountButtons( el.value, props.client, {
-        onApprove: ( data ) => emit( 'approved', data.orderID ),
-        onError: () => emit( 'failed' ),
-        onIneligible: () => emit( 'failed', 'ineligible' ),
-    } );
+    try {
+        const paypal = await import( '/vendor/ecommerce-paypal/paypal-checkout.js' );
+
+        handle = await paypal.mountButtons( el.value, props.client, {
+            onApprove: ( data ) => emit( 'approved', data.orderID ),
+            onError: () => emit( 'failed' ),
+            onIneligible: () => emit( 'failed', 'ineligible' ),
+        } );
+    } catch {
+        // The SDK couldn't load (offline, blocked by CSP, …).
+        if ( ! disposed ) {
+            emit( 'failed', 'load_failed' );
+        }
+
+        return;
+    }
+
+    // The component may have unmounted while PayPal loaded.
+    if ( disposed ) {
+        handle?.close();
+
+        return;
+    }
+
+    mounted = handle;
 } );
 
-onBeforeUnmount( () => mounted?.close() );
+onBeforeUnmount( () => {
+    disposed = true;
+    mounted?.close();
+} );
 </script>
 
 <template>

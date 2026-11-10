@@ -41,17 +41,19 @@ React and Vue storefronts can import the module from `public/vendor/ecommerce-pa
 If your site sends a Content-Security-Policy, add the sources the install command prints:
 
 ```text
-script-src  https://www.paypal.com https://*.paypal.com https://applepay.cdn-apple.com https://pay.google.com
-frame-src   https://*.paypal.com https://pay.google.com
-connect-src https://*.paypal.com
-img-src     https://*.paypalobjects.com
+script-src  https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com https://applepay.cdn-apple.com https://pay.google.com
+style-src   https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com
+connect-src https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com
+frame-src   https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com https://pay.google.com
+child-src   https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com
+img-src     https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com data:
 ```
 
-See [Security and CSP](Advanced-Security-Csp) for the details and a `spatie/laravel-csp` example.
+Also allow your nonce (or `'unsafe-inline'`) in `script-src` and `style-src`. See [Security and CSP](Advanced-Security-Csp) for the details, how the module passes your nonce to PayPal's script, and a `spatie/laravel-csp` example.
 
 ## 4. Layout requirements
 
-The drivers run inside the storefront's checkout, so the storefront's layout contract applies: Livewire's assets, your Tailwind build, and `@stack( 'scripts' )`. The driver scripts use Livewire's `@script`, and the Pay Later Blade component prints an inline `<script type="module">`, so a CSP with `script-src` nonces must cover inline scripts the way your Livewire setup already does.
+The drivers run inside the storefront's checkout, so the storefront's layout contract applies: Livewire's assets, your Tailwind build, and `@stack( 'scripts' )`. The driver scripts use Livewire's `@script`, and the Pay Later Blade component prints an inline `<script type="module">`, so a CSP with `script-src` nonces must cover inline scripts the way your Livewire setup already does. PayPal's SDK script reuses that nonce.
 
 ## Card field styling
 

@@ -4,7 +4,7 @@ title: Card Fields
 
 # Card Fields
 
-The `paypal-card` gateway takes credit and debit cards in PayPal's advanced card fields: number, expiry, security code, and name, each a PayPal-hosted iframe. Card data goes straight to PayPal, never through your server or a Livewire request, so the store stays in PCI SAQ-A scope.
+The `paypal-card` gateway takes credit and debit cards in PayPal's advanced card fields: number, expiry, security code, and name, each a PayPal-hosted iframe. Card data goes straight to PayPal, never through your server or a Livewire request. That is designed to support a PCI DSS SAQ A assessment, but eligibility also depends on the rest of your payment page (including protecting its scripts) and should be confirmed with your acquirer. See [Security and CSP](Advanced-Security-Csp).
 
 | | |
 | --- | --- |

@@ -44,13 +44,13 @@ Apple fetches the file from the domain root. If your app is served under a path,
 
 ## 3. Register the domain
 
-In the PayPal dashboard, add each domain (and subdomain) that shows Apple Pay. PayPal asks Apple to verify it by fetching the file. Check it is reachable first:
+In the PayPal dashboard, add each domain (and subdomain) that shows Apple Pay. PayPal asks Apple to verify it by fetching the file. Apple Pay is still off at this point, so check the file is reachable directly, without following redirects, as Apple does:
 
 ```bash
-php artisan ecommerce-paypal:verify-credentials
+curl --fail --max-redirs 0 https://your-store.example/.well-known/apple-developer-merchantid-domain-association
 ```
 
-With Apple Pay on, the command fetches `{APP_URL origin}/.well-known/apple-developer-merchantid-domain-association` without following redirects (as Apple does), and fails when the app isn't on HTTPS, the response isn't the file, or it is an HTML page.
+It should print the hex file, not an HTML page or a redirect. Once Apple Pay is on (step 4), `php artisan ecommerce-paypal:verify-credentials` runs the same check for you: it fetches `{APP_URL origin}/.well-known/apple-developer-merchantid-domain-association` and fails when the app isn't on HTTPS, the response isn't the file, or it is an HTML page. It skips this check while Apple Pay is off.
 
 ## 4. Turn it on
 

@@ -6,7 +6,7 @@ title: ArtisanPack UI Ecommerce PayPal Documentation Home
 
 Welcome to the documentation for ArtisanPack UI Ecommerce PayPal. The package is the PayPal gateway for the `artisanpack-ui/ecommerce` engine. It adds PayPal (with Pay Later and Venmo), advanced card fields with 3-D Secure, Apple Pay, and Google Pay to checkout through PayPal's Orders v2 API.
 
-It registers four gateways with the engine, verifies PayPal's webhooks, and stores saved payment methods as PayPal vault references. With `artisanpack-ui/ecommerce-storefront-livewire` installed, it also ships the Livewire payment UI and a saved payment methods account page. Card data is entered in PayPal-hosted fields and never reaches your server (SAQ-A).
+It registers four gateways with the engine, verifies PayPal's webhooks, and stores saved payment methods as PayPal vault references. With `artisanpack-ui/ecommerce-storefront-livewire` installed, it also ships the Livewire payment UI and a saved payment methods account page. Card data is entered in PayPal-hosted fields and never reaches your server, which is designed to support a PCI DSS SAQ A assessment; see [Security and CSP](Advanced-Security-Csp) for what else eligibility needs.
 
 ## Table of Contents
 
@@ -80,7 +80,12 @@ PAYPAL_CLIENT_SECRET=your-sandbox-secret
 ```
 
 ```bash
-php artisan ecommerce-paypal:webhooks:register   # prints PAYPAL_WEBHOOK_ID
+php artisan ecommerce-paypal:webhooks:register   # prints the webhook id
+```
+
+Add the printed id to `.env` as `PAYPAL_WEBHOOK_ID`, then check the setup:
+
+```bash
 php artisan ecommerce-paypal:verify-credentials
 ```
 

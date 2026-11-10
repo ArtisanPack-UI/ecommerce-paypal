@@ -40,7 +40,7 @@ The `paypal` gateway offers PayPal's Smart Buttons: PayPal, and Pay Later and Ve
 - The buttons render in a labelled group ("Pay with PayPal") inside `wire:ignore`, with a "Loading PayPal…" note until the SDK loads.
 - **Approve.** `onApprove` calls the driver's `confirm()`, which checks the approved Order is the session's and reports it to the checkout.
 - **Cancel.** Closing PayPal keeps the shopper on the payment step, announces a polite message, and returns focus to the step heading. When PayPal runs as a full page instead of a popup (popups blocked, some mobile browsers), "Cancel and return" goes to the storefront's checkout return route, which sends the shopper back to the payment step with "Your payment wasn't completed." The Order's `cancel_url` defaults to its `return_url` for this reason.
-- **Failure.** A failed payment announces the error in an alert and moves focus to the step heading, since PayPal's window has closed.
+- **Failure.** A failed payment announces the error in an alert. When PayPal's window closing left focus on the page body, focus moves to the step heading; focus on another control is left alone.
 - **Ineligible.** When the SDK says PayPal can't be offered, the driver hides the buttons, announces why, and tells the checkout.
 - **Save for faster checkout.** With `vault.enabled` on, a signed-in shopper sees "Save PayPal for faster checkout". Ticking it replaces the PayPal Order with one that asks PayPal to vault the account. See [Saved Payment Methods](Vaulting).
 - **Returning buyers.** For a shopper with a saved PayPal account, the server mints a PayPal `id_token` and the SDK loads with `data-user-id-token`, so PayPal shows the saved wallet.

@@ -26,11 +26,13 @@ The package follows [Semantic Versioning](https://semver.org/). Breaking changes
    php artisan migrate
    ```
 
-4. Re-register the webhook, in case the release subscribes to new events (it only updates the event list of your existing webhook; the id stays the same):
+4. Re-register the webhook, in case the release subscribes to new events:
 
    ```bash
    php artisan ecommerce-paypal:webhooks:register
    ```
+
+   The command finds your webhook by its URL. If you registered it with `--url`, pass the same `--url` again: the existing webhook's event list is updated and its id stays the same. If the URL it registers differs from the existing webhook's (a changed `APP_URL`, say), PayPal creates a new webhook with a new id. Put that id in `PAYPAL_WEBHOOK_ID` (comma-separated with the old one while both still deliver), and delete the old webhook in the PayPal dashboard once deliveries move over.
 
 5. Check the setup:
 

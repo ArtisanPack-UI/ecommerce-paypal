@@ -54,6 +54,8 @@ Webhooks are processed on the engine's webhook queue, so run a queue worker.
 php artisan ecommerce-paypal:verify-credentials
 ```
 
+If you registered the webhook with `--url`, pass the same `--url` here too, or the command compares PayPal's webhook with your app's route URL and reports a mismatch.
+
 It checks the access token, the enabled methods against your base currency, the webhook, and (with Apple Pay on) the domain association file. It exits non-zero when a check fails.
 
 ## 5. Turn PayPal on

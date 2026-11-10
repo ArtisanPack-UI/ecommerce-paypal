@@ -67,14 +67,20 @@ It exits non-zero when any check fails, so you can run it in a deploy script.
    PAYPAL_CLIENT_SECRET=your-live-secret
    ```
 
-4. Make sure `APP_URL` is your HTTPS address, then register the live webhook and set its id:
+   Values saved in the store's PayPal settings override these. If an administrator saved **Mode** or **Client ID** there (`paypal.mode`, `paypal.client_id`), change them to the live values or clear them, or the store stays in sandbox mode or pairs the sandbox client id with the live secret.
+4. If you cache config, clear it so the next commands see the live values:
+
+   ```bash
+   php artisan config:clear
+   ```
+
+5. Make sure `APP_URL` is your HTTPS address, then register the live webhook:
 
    ```bash
    php artisan ecommerce-paypal:webhooks:register
    ```
 
-5. Run `php artisan ecommerce-paypal:verify-credentials`.
-6. Clear the config cache if you cache config (`php artisan config:cache`).
+6. Set the printed id as `PAYPAL_WEBHOOK_ID`, rebuild the config cache if you use one (`php artisan config:cache`), and run `php artisan ecommerce-paypal:verify-credentials`.
 
 When PayPal is enabled in live mode, the store settings screen refuses to save if PayPal won't issue a live token for the credentials. That check can't run while PayPal is unreachable or the credentials are incomplete, so always run `verify-credentials` after switching.
 

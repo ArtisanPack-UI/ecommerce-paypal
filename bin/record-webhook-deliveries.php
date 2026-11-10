@@ -83,6 +83,14 @@ foreach ( RECORDER_HEADERS as $name ) {
     $headers[ $name ] = $value;
 }
 
+// WebhookVerifier only accepts this algorithm, so a recording made with any
+// other would fail on replay.
+if ( 'SHA256withRSA' !== $headers['PAYPAL-AUTH-ALGO'] ) {
+    recorderRespond( 400, 'Unsupported signing algorithm: ' . $headers['PAYPAL-AUTH-ALGO'] );
+
+    return;
+}
+
 $certUrl = parse_url( $headers['PAYPAL-CERT-URL'] );
 
 if ( ! is_array( $certUrl )
@@ -104,7 +112,7 @@ if ( ! is_string( $certificate ) || '' === $certificate ) {
     return;
 }
 
-$signed   = implode( '|', [ $headers['PAYPAL-TRANSMISSION-ID'], $headers['PAYPAL-TRANSMISSION-TIME'], $webhookId, (string) crc32( $body ) ] );
+$signed   = implode( '|', [ $headers['PAYPAL-TRANSMISSION-ID'], $headers['PAYPAL-TRANSMISSION-TIME'], $webhookId, sprintf( '%u', crc32( $body ) ) ] );
 $verified = 1 === openssl_verify( $signed, (string) base64_decode( $headers['PAYPAL-TRANSMISSION-SIG'], true ), $certificate, OPENSSL_ALGO_SHA256 );
 
 if ( ! $verified ) {
