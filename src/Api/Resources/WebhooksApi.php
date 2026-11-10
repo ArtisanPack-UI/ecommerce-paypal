@@ -19,6 +19,7 @@ use ArtisanPackUI\EcommercePayPal\Api\Data\PayPalWebhook;
 use ArtisanPackUI\EcommercePayPal\Api\Data\PayPalWebhookEventList;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalClient;
 use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalApiException;
+use JsonException;
 
 /**
  * `/v1/notifications`: webhook subscriptions, signature verification, and
@@ -127,27 +128,37 @@ final class WebhooksApi
      * Asks PayPal whether a delivery's signature is valid (postback
      * verification, spec §2.2 D7).
      *
+     * PayPal checks the event exactly as it was delivered, so `$rawEvent`
+     * is spliced into the request body byte for byte. Decoding and
+     * re-encoding it would escape `/`, turn non-ASCII characters into
+     * `\uXXXX`, and turn `{}` into `[]`, and PayPal would then reject it.
+     *
      * @since 1.0.0
      *
      * @param  array{transmission_id: string, transmission_time: string, transmission_sig: string, cert_url: string, auth_algo: string}  $transmission  The `PAYPAL-*` header values.
-     * @param  string                $webhookId  Webhook id the delivery should be for.
-     * @param  array<string, mixed>  $event      The decoded delivery body.
+     * @param  string  $webhookId  Webhook id the delivery should be for.
+     * @param  string  $rawEvent   The delivery body, exactly as received.
      *
      * @throws PayPalApiException When the check itself failed.
+     * @throws JsonException      When the header values can't be encoded.
      *
      * @return bool
      */
-    public function verifySignature( array $transmission, string $webhookId, array $event ): bool
+    public function verifySignature( array $transmission, string $webhookId, string $rawEvent ): bool
     {
-        $body = $this->client->postReadOnly( '/v1/notifications/verify-webhook-signature', [
+        $head = json_encode( [
             'transmission_id'   => $transmission['transmission_id'],
             'transmission_time' => $transmission['transmission_time'],
             'transmission_sig'  => $transmission['transmission_sig'],
             'cert_url'          => $transmission['cert_url'],
             'auth_algo'         => $transmission['auth_algo'],
             'webhook_id'        => $webhookId,
-            'webhook_event'     => $event,
-        ] );
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES );
+
+        $body = $this->client->postRawReadOnly(
+            '/v1/notifications/verify-webhook-signature',
+            substr( $head, 0, -1 ) . ',"webhook_event":' . $rawEvent . '}',
+        );
 
         return 'SUCCESS' === strtoupper( (string) ( $body['verification_status'] ?? '' ) );
     }

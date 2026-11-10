@@ -212,6 +212,23 @@ describe( 'local verification', function (): void {
 
         expect( verifyPayPalDelivery( signedPayPalDelivery( $this->identity ) )->errorCode )->toBe( 'certificate_unavailable' );
     } );
+
+    it( 'downloads a certificate it could not get or use only once in 10 minutes', function ( string $pem, int $status, string $code ): void {
+        servePayPalCertificate( $pem, $status );
+
+        expect( verifyPayPalDelivery( signedPayPalDelivery( $this->identity ) )->errorCode )->toBe( $code )
+            ->and( verifyPayPalDelivery( signedPayPalDelivery( $this->identity ) )->errorCode )->toBe( $code )
+            ->and( paypalCertificateDownloads() )->toBe( 1 );
+
+        servePayPalCertificate( $this->identity['pem'] );
+        $this->travel( WebhookVerifier::MISS_SECONDS + 1 )->seconds();
+
+        expect( verifyPayPalDelivery( signedPayPalDelivery( $this->identity ) )->verified )->toBeTrue()
+            ->and( paypalCertificateDownloads() )->toBe( 2 );
+    } )->with( [
+        'unavailable' => [ 'Server error', 503, 'certificate_unavailable' ],
+        'unreadable'  => [ 'not a certificate', 200, 'certificate_untrusted' ],
+    ] );
 } );
 
 describe( 'request checks', function (): void {
@@ -228,16 +245,39 @@ describe( 'request checks', function (): void {
 
         expect( verifyPayPalDelivery( signedPayPalDelivery( $this->identity, [ 'PAYPAL-TRANSMISSION-TIME' => $time ] ) )->errorCode )->toBe( 'stale_transmission' );
     } )->with( [
-        'replayed an hour later' => [ -3600 ],
-        'just over 5 minutes'    => [ -301 ],
-        'from the future'        => [ 360 ],
-        'unreadable'             => [ null ],
+        'replayed after PayPal stopped retrying' => [ -259201 ],
+        'from the future'                        => [ 259260 ],
+        'unreadable'                             => [ null ],
     ] );
 
-    it( 'accepts a transmission time within 5 minutes', function (): void {
-        $time = CarbonImmutable::now()->utc()->subSeconds( 270 )->format( 'Y-m-d\TH:i:s\Z' );
+    it( 'accepts PayPal\'s retries of an hour-old delivery by default', function (): void {
+        $time = CarbonImmutable::now()->utc()->subHour()->format( 'Y-m-d\TH:i:s\Z' );
 
-        expect( verifyPayPalDelivery( signedPayPalDelivery( $this->identity, [ 'PAYPAL-TRANSMISSION-TIME' => $time ] ) )->verified )->toBeTrue();
+        expect( WebhookVerifier::toleranceSeconds() )->toBe( 259200 )
+            ->and( verifyPayPalDelivery( signedPayPalDelivery( $this->identity, [ 'PAYPAL-TRANSMISSION-TIME' => $time ] ) )->verified )->toBeTrue();
+    } );
+
+    it( 'applies a configured window', function ( int $offset, bool $verified ): void {
+        config( [ 'artisanpack.ecommerce-paypal.webhook_tolerance_seconds' => 300 ] );
+        $time = CarbonImmutable::now()->utc()->addSeconds( $offset )->format( 'Y-m-d\TH:i:s\Z' );
+
+        $result = verifyPayPalDelivery( signedPayPalDelivery( $this->identity, [ 'PAYPAL-TRANSMISSION-TIME' => $time ] ) );
+
+        expect( $result->verified )->toBe( $verified )
+            ->and( $result->errorCode )->toBe( $verified ? null : 'stale_transmission' );
+    } )->with( [
+        'within 5 minutes'    => [ -270, true ],
+        'an hour old'         => [ -3600, false ],
+        'just over 5 minutes' => [ -301, false ],
+        'from the future'     => [ 360, false ],
+    ] );
+
+    it( 'skips the time check when the window is 0, but still needs a readable time', function (): void {
+        config( [ 'artisanpack.ecommerce-paypal.webhook_tolerance_seconds' => 0 ] );
+        $time = CarbonImmutable::now()->utc()->subDays( 10 )->format( 'Y-m-d\TH:i:s\Z' );
+
+        expect( verifyPayPalDelivery( signedPayPalDelivery( $this->identity, [ 'PAYPAL-TRANSMISSION-TIME' => $time ] ) )->verified )->toBeTrue()
+            ->and( verifyPayPalDelivery( signedPayPalDelivery( $this->identity, [ 'PAYPAL-TRANSMISSION-TIME' => 'whenever' ] ) )->errorCode )->toBe( 'stale_transmission' );
     } );
 
     it( 'rejects certificate URLs off PayPal\'s certificate host, without fetching them', function ( string $url ): void {
@@ -251,6 +291,9 @@ describe( 'request checks', function (): void {
         'live host, sandbox' => [ 'https://api.paypal.com/v1/notifications/certs/CERT-1' ],
         'other port'         => [ 'https://api.sandbox.paypal.com:8443/v1/notifications/certs/CERT-1' ],
         'other path'         => [ 'https://api.sandbox.paypal.com/v1/oauth2/token' ],
+        'path traversal'     => [ 'https://api.sandbox.paypal.com/v1/notifications/certs/../x' ],
+        'no CERT- prefix'    => [ 'https://api.sandbox.paypal.com/v1/notifications/certs/1' ],
+        'nested path'        => [ 'https://api.sandbox.paypal.com/v1/notifications/certs/CERT-1/x' ],
         'query string'       => [ PAYPAL_CERT_URL . '?redirect=https://attacker.example' ],
         'not a url'          => [ 'certificate' ],
     ] );
@@ -310,13 +353,55 @@ describe( 'postback verification', function (): void {
             && 'WH-EVENT-1' === $request['webhook_event']['id'] );
     } );
 
+    it( 'sends the event exactly as it was received', function (): void {
+        $raw = '{"id":"WH-EVENT-1","event_type":"PAYMENT.CAPTURE.COMPLETED","summary":"Payment of 10,00 € completed","links":[{"href":"https://api.paypal.com/v1/notifications/webhooks-events/WH-EVENT-1"}],"resource":{"id":"3C679366HH908993F","supplementary_data":{}}}';
+
+        expect( verifyPayPalDelivery( signedPayPalDelivery( $this->identity, sentBody: $raw ) )->verified )->toBeTrue();
+
+        $body = $this->paypal->sent( 'webhooks.verify_signature' )[0]->body();
+
+        expect( $body )->toContain( '"webhook_event":' . $raw . '}' )
+            ->and( $body )->toEndWith( '"webhook_event":' . $raw . '}' )
+            ->and( $body )->toContain( '"cert_url":"' . PAYPAL_CERT_URL . '"' )
+            ->and( $body )->not->toContain( '\\/' )
+            ->and( json_decode( $body, true )['webhook_id'] )->toBe( 'WH-CURRENT' );
+    } );
+
     it( 'tries each webhook id during a rotation', function (): void {
         config( [ 'artisanpack.ecommerce-paypal.webhook_id' => 'WH-OLD,WH-NEW' ] );
         $this->paypal->respond( 'webhooks.verify_signature', 'webhooks/verify-signature-failure' );
+        $raw = '{"id":"WH-EVENT-1","event_type":"PAYMENT.CAPTURE.COMPLETED","resource":{"href":"https://example.com/a/b","note":"€","extra":{}}}';
+
+        expect( verifyPayPalDelivery( signedPayPalDelivery( $this->identity, sentBody: $raw ) )->verified )->toBeTrue();
+
+        $sent = $this->paypal->sent( 'webhooks.verify_signature' );
+
+        expect( array_map( fn ( ClientRequest $request ): string => $request['webhook_id'], $sent ) )->toBe( [ 'WH-OLD', 'WH-NEW' ] )
+            ->and( array_map( fn ( ClientRequest $request ): bool => str_ends_with( $request->body(), ',"webhook_event":' . $raw . '}' ), $sent ) )->toBe( [ true, true ] );
+    } );
+
+    it( 'tries the next webhook id when PayPal refuses one outright', function (): void {
+        config( [ 'artisanpack.ecommerce-paypal.webhook_id' => 'WH-OLD,WH-NEW' ] );
+        $this->paypal->error( 'webhooks.verify_signature', 'resource-not-found' );
 
         expect( verifyPayPalDelivery( signedPayPalDelivery( $this->identity ) )->verified )->toBeTrue();
 
         expect( array_map( fn ( ClientRequest $request ): string => $request['webhook_id'], $this->paypal->sent( 'webhooks.verify_signature' ) ) )->toBe( [ 'WH-OLD', 'WH-NEW' ] );
+    } );
+
+    it( 'reports a mismatch, not an outage, when every id is refused outright', function (): void {
+        config( [ 'artisanpack.ecommerce-paypal.webhook_id' => 'WH-OLD,WH-NEW' ] );
+        $this->paypal->error( 'webhooks.verify_signature', 'resource-not-found', times: 2 );
+
+        expect( verifyPayPalDelivery( signedPayPalDelivery( $this->identity ) )->errorCode )->toBe( 'signature_mismatch' );
+    } );
+
+    it( 'reports an outage when one id could not be checked and none verified', function (): void {
+        config( [ 'artisanpack.ecommerce-paypal.webhook_id' => 'WH-OLD,WH-NEW' ] );
+        $this->paypal->error( 'webhooks.verify_signature', 'internal-server-error' );
+        $this->paypal->respond( 'webhooks.verify_signature', 'webhooks/verify-signature-failure' );
+
+        expect( verifyPayPalDelivery( signedPayPalDelivery( $this->identity ) )->errorCode )->toBe( 'verification_unavailable' );
     } );
 
     it( 'rejects a delivery PayPal does not verify', function (): void {

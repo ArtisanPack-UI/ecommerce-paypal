@@ -20,6 +20,7 @@ use ArtisanPackUI\EcommercePayPal\Api\PayPalClient;
 use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalApiException;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalWalletGateway;
 use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalWebhookEvents;
+use ArtisanPackUI\EcommercePayPal\Webhooks\WebhookVerifier;
 use Illuminate\Console\Command;
 use Illuminate\Support\Str;
 
@@ -105,9 +106,7 @@ class RegisterWebhookCommand extends Command
         $this->line( '    PAYPAL_WEBHOOK_ID=' . $webhook->id() );
         $this->newLine();
 
-        $configured = array_filter( array_map( 'trim', explode( ',', (string) config( 'artisanpack.ecommerce-paypal.webhook_id', '' ) ) ) );
-
-        if ( ! in_array( $webhook->id(), $configured, true ) ) {
+        if ( ! in_array( $webhook->id(), WebhookVerifier::webhookIds(), true ) ) {
             $this->components->warn( __( 'Set PAYPAL_WEBHOOK_ID to this id, or webhooks will be rejected.' ) );
         }
 

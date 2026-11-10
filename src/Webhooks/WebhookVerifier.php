@@ -37,10 +37,12 @@ use Throwable;
  * - a `PAYPAL-TRANSMISSION-*`, `PAYPAL-CERT-URL`, or `PAYPAL-AUTH-ALGO`
  *   header is missing (`missing_headers`);
  * - the algorithm isn't `SHA256withRSA` (`unsupported_algorithm`);
- * - the transmission time is unreadable or more than 5 minutes off
- *   (`stale_transmission`);
+ * - the transmission time is unreadable or further from now than
+ *   `webhook_tolerance_seconds` (3 days by default; `0` turns the check
+ *   off) (`stale_transmission`);
  * - the certificate URL isn't HTTPS on PayPal's certificate host for the
- *   current mode (`invalid_cert_url`);
+ *   current mode, at a `/v1/notifications/certs/CERT-…` path
+ *   (`invalid_cert_url`);
  * - no webhook id is configured (`webhook_id_missing`);
  * - the body isn't a JSON event (`invalid_payload`).
  *
@@ -49,8 +51,11 @@ use Throwable;
  * PayPal subject (`certificate_untrusted`), cached until it expires, and
  * `transmission_id|transmission_time|webhook_id|crc32(body)` is checked
  * against the signature for each configured webhook id
- * (`signature_mismatch` when none matches). In `postback` mode PayPal's
- * `verify-webhook-signature` endpoint decides instead.
+ * (`signature_mismatch` when none matches). A certificate that couldn't be
+ * downloaded or used is remembered for {@see self::MISS_SECONDS}, so
+ * unsigned requests can't make the store download it again and again. In
+ * `postback` mode PayPal's `verify-webhook-signature` endpoint decides
+ * instead, given the body exactly as it was received.
  *
  * A failure logs its code and the transmission id, never the body.
  *
@@ -71,13 +76,40 @@ class WebhookVerifier
     public const ALGORITHM = 'SHA256withRSA';
 
     /**
-     * How far the transmission time may be from now, in seconds.
+     * How far the transmission time may be from now, in seconds, when
+     * `webhook_tolerance_seconds` isn't configured: 3 days, PayPal's retry
+     * horizon (it redelivers up to 25 times over 3 days).
+     *
+     * Pending the sandbox recording (audit P-HOOK-5/6): if PayPal re-signs
+     * each retry with a new transmission time, this can drop back to 300.
+     * Until that is confirmed, a long window is the safe default: the
+     * signature binds the transmission id and time, and the engine drops
+     * event ids it has already processed, so a replay can't act twice.
      *
      * @since 1.0.0
      *
      * @var int
      */
-    public const TOLERANCE_SECONDS = 300;
+    public const TOLERANCE_SECONDS = 259200;
+
+    /**
+     * How long a certificate that couldn't be downloaded or used is
+     * remembered, in seconds.
+     *
+     * @since 1.0.0
+     *
+     * @var int
+     */
+    public const MISS_SECONDS = 600;
+
+    /**
+     * The path PayPal's signing certificates are served from.
+     *
+     * @since 1.0.0
+     *
+     * @var string
+     */
+    public const CERTIFICATE_PATH = '#^/v1/notifications/certs/CERT-[A-Za-z0-9-]{1,128}$#';
 
     /**
      * Cache key prefix for downloaded certificates.
@@ -173,7 +205,7 @@ class WebhookVerifier
         }
 
         $failure = 'postback' === self::mode()
-            ? $this->verifyByPostback( $transmission, $webhookIds, $event )
+            ? $this->verifyByPostback( $transmission, $webhookIds, $body )
             : $this->verifyLocally( $transmission, $webhookIds, $body );
 
         if ( null !== $failure ) {
@@ -186,7 +218,8 @@ class WebhookVerifier
     /**
      * Whether `$url` is an HTTPS URL on PayPal's certificate host for the
      * current mode (`api.paypal.com` live, `api.sandbox.paypal.com`
-     * sandbox), with no credentials, port, query, or fragment.
+     * sandbox), with no credentials, port, query, or fragment, at a
+     * certificate path ({@see self::CERTIFICATE_PATH}).
      *
      * @since 1.0.0
      *
@@ -209,7 +242,7 @@ class WebhookVerifier
             && ( ! isset( $parts['port'] ) || 443 === (int) $parts['port'] )
             && ! isset( $parts['query'] )
             && ! isset( $parts['fragment'] )
-            && str_starts_with( (string) ( $parts['path'] ?? '' ), '/v1/notifications/certs/' );
+            && 1 === preg_match( self::CERTIFICATE_PATH, (string) ( $parts['path'] ?? '' ) );
     }
 
     /**
@@ -228,6 +261,22 @@ class WebhookVerifier
             array_map( static fn ( mixed $id ): string => trim( (string) $id ), $ids ),
             static fn ( string $id ): bool => '' !== $id,
         ) ) );
+    }
+
+    /**
+     * How far the transmission time may be from now, in seconds
+     * (`webhook_tolerance_seconds`, {@see self::TOLERANCE_SECONDS} by
+     * default). `0` turns the check off.
+     *
+     * @since 1.0.0
+     *
+     * @return int
+     */
+    public static function toleranceSeconds(): int
+    {
+        $configured = config( 'artisanpack.ecommerce-paypal.webhook_tolerance_seconds' );
+
+        return is_numeric( $configured ) ? max( 0, (int) $configured ) : self::TOLERANCE_SECONDS;
     }
 
     /**
@@ -299,24 +348,40 @@ class WebhookVerifier
     /**
      * Asks PayPal to verify the delivery, once per configured webhook id.
      *
+     * A webhook id PayPal refuses outright (an old id it no longer knows,
+     * during a rotation) doesn't stop the others being tried. The delivery
+     * is rejected as `verification_unavailable`, so PayPal delivers it
+     * again, only when a check failed in a way worth repeating and no id
+     * verified; otherwise it is a `signature_mismatch`.
+     *
      * @since 1.0.0
      *
      * @param  array<string, string>  $transmission  Header values.
      * @param  array<int, string>     $webhookIds    Configured webhook ids.
-     * @param  array<string, mixed>   $event         Decoded body.
+     * @param  string                 $body          Raw body, exactly as received.
      *
      * @return WebhookResult|null Null when it verifies.
      */
-    protected function verifyByPostback( array $transmission, array $webhookIds, array $event ): ?WebhookResult
+    protected function verifyByPostback( array $transmission, array $webhookIds, string $body ): ?WebhookResult
     {
+        $unavailable = null;
+
         foreach ( $webhookIds as $webhookId ) {
             try {
-                if ( $this->client->webhooks()->verifySignature( $transmission, $webhookId, $event ) ) {
+                if ( $this->client->webhooks()->verifySignature( $transmission, $webhookId, $body ) ) {
                     return null;
                 }
             } catch ( PayPalApiException $exception ) {
-                return $this->reject( 'verification_unavailable', __( 'PayPal could not verify the webhook. It will be delivered again.' ), $transmission['transmission_id'], $exception->debugId );
+                if ( $exception->isRetryable() ) {
+                    $unavailable = $exception;
+                }
+            } catch ( JsonException ) {
+                continue;
             }
+        }
+
+        if ( null !== $unavailable ) {
+            return $this->reject( 'verification_unavailable', __( 'PayPal could not verify the webhook. It will be delivered again.' ), $transmission['transmission_id'], $unavailable->debugId );
         }
 
         return $this->reject( 'signature_mismatch', __( 'The PayPal webhook signature does not match.' ), $transmission['transmission_id'] );
@@ -325,6 +390,10 @@ class WebhookVerifier
     /**
      * The signing certificate at `$url`: from the cache, or downloaded,
      * checked, and cached until it expires.
+     *
+     * A certificate that couldn't be downloaded or used is remembered, with
+     * its rejection, for {@see self::MISS_SECONDS}, so it isn't downloaded
+     * again for every delivery that names it.
      *
      * @since 1.0.0
      *
@@ -335,7 +404,15 @@ class WebhookVerifier
      */
     protected function certificate( string $url, string $transmissionId ): OpenSSLCertificate|WebhookResult
     {
-        $key    = self::CACHE_PREFIX . hash( 'sha256', $url );
+        $hash   = hash( 'sha256', $url );
+        $key    = self::CACHE_PREFIX . $hash;
+        $miss   = self::CACHE_PREFIX . 'miss:' . $hash;
+        $missed = $this->cache->get( $miss );
+
+        if ( is_string( $missed ) && null !== self::certificateProblem( $missed ) ) {
+            return $this->reject( self::certificateCode( $missed ), (string) self::certificateProblem( $missed ), $transmissionId );
+        }
+
         $cached = $this->cache->get( $key );
         $pem    = is_string( $cached ) ? $cached : null;
 
@@ -343,7 +420,7 @@ class WebhookVerifier
             try {
                 $pem = $this->client->certificate( $url );
             } catch ( PayPalApiException $exception ) {
-                return $this->reject( 'certificate_unavailable', __( 'The PayPal webhook certificate could not be downloaded. It will be delivered again.' ), $transmissionId, $exception->debugId );
+                return $this->miss( $key, $miss, 'certificate_unavailable', $transmissionId, $exception->debugId );
             }
         }
 
@@ -351,9 +428,7 @@ class WebhookVerifier
         $details     = false === $certificate ? false : openssl_x509_parse( $certificate );
 
         if ( false === $certificate || ! is_array( $details ) ) {
-            $this->cache->forget( $key );
-
-            return $this->reject( 'certificate_untrusted', __( 'The PayPal webhook certificate could not be read.' ), $transmissionId );
+            return $this->miss( $key, $miss, 'certificate_unreadable', $transmissionId );
         }
 
         $now       = Date::now()->getTimestamp();
@@ -361,15 +436,11 @@ class WebhookVerifier
         $validTo   = (int) ( $details['validTo_time_t'] ?? 0 );
 
         if ( $now < $validFrom || $now >= $validTo ) {
-            $this->cache->forget( $key );
-
-            return $this->reject( 'certificate_expired', __( 'The PayPal webhook certificate is expired or not yet valid.' ), $transmissionId );
+            return $this->miss( $key, $miss, 'certificate_expired', $transmissionId );
         }
 
         if ( ! self::hasPayPalSubject( $details ) ) {
-            $this->cache->forget( $key );
-
-            return $this->reject( 'certificate_untrusted', __( 'The PayPal webhook certificate was not issued to PayPal.' ), $transmissionId );
+            return $this->miss( $key, $miss, 'certificate_untrusted', $transmissionId );
         }
 
         if ( ! is_string( $cached ) ) {
@@ -377,6 +448,64 @@ class WebhookVerifier
         }
 
         return $certificate;
+    }
+
+    /**
+     * Forgets the cached certificate, remembers the problem for
+     * {@see self::MISS_SECONDS}, and returns the rejection.
+     *
+     * @since 1.0.0
+     *
+     * @param  string       $key             Certificate cache key.
+     * @param  string       $miss            Miss cache key.
+     * @param  string       $problem         A {@see self::certificateProblem()} key.
+     * @param  string       $transmissionId  For the log line.
+     * @param  string|null  $debugId         PayPal debug id, when the download failed.
+     *
+     * @return WebhookResult
+     */
+    protected function miss( string $key, string $miss, string $problem, string $transmissionId, ?string $debugId = null ): WebhookResult
+    {
+        $this->cache->forget( $key );
+        $this->cache->put( $miss, $problem, self::MISS_SECONDS );
+
+        return $this->reject( self::certificateCode( $problem ), (string) self::certificateProblem( $problem ), $transmissionId, $debugId );
+    }
+
+    /**
+     * The translated reason for a certificate problem, or null for an
+     * unknown key.
+     *
+     * @since 1.0.0
+     *
+     * @param  string  $problem  `certificate_unavailable`, `certificate_unreadable`, `certificate_expired`, or `certificate_untrusted`.
+     *
+     * @return string|null
+     */
+    protected static function certificateProblem( string $problem ): ?string
+    {
+        return match ( $problem ) {
+            'certificate_unavailable' => __( 'The PayPal webhook certificate could not be downloaded. It will be delivered again.' ),
+            'certificate_unreadable'  => __( 'The PayPal webhook certificate could not be read.' ),
+            'certificate_expired'     => __( 'The PayPal webhook certificate is expired or not yet valid.' ),
+            'certificate_untrusted'   => __( 'The PayPal webhook certificate was not issued to PayPal.' ),
+            default                   => null,
+        };
+    }
+
+    /**
+     * The rejection code for a certificate problem (an unreadable
+     * certificate is reported as `certificate_untrusted`).
+     *
+     * @since 1.0.0
+     *
+     * @param  string  $problem  A {@see self::certificateProblem()} key.
+     *
+     * @return string
+     */
+    protected static function certificateCode( string $problem ): string
+    {
+        return 'certificate_unreadable' === $problem ? 'certificate_untrusted' : $problem;
     }
 
     /**
@@ -404,7 +533,8 @@ class WebhookVerifier
     }
 
     /**
-     * Whether `$time` is a readable time within the tolerance of now.
+     * Whether `$time` is a readable time within the tolerance of now
+     * ({@see self::toleranceSeconds()}).
      *
      * @since 1.0.0
      *
@@ -420,7 +550,9 @@ class WebhookVerifier
             return false;
         }
 
-        return abs( Date::now()->getTimestamp() - $sent->getTimestamp() ) <= self::TOLERANCE_SECONDS;
+        $tolerance = self::toleranceSeconds();
+
+        return 0 === $tolerance || abs( Date::now()->getTimestamp() - $sent->getTimestamp() ) <= $tolerance;
     }
 
     /**

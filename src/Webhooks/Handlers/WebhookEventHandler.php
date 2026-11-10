@@ -22,6 +22,8 @@ use ArtisanPackUI\EcommercePayPal\Api\PayPalClient;
 use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalApiException;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalOrderMeta;
 use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalOrderLocator;
+use Closure;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -151,16 +153,24 @@ abstract class WebhookEventHandler
      * The engine deduplicates deliveries, but it releases its claim when a
      * later `webhook_received` listener throws, and PayPal then redelivers.
      * The ids are kept in `orders.meta.paypal.webhook_events` (the latest
-     * {@see self::REMEMBERED_EVENTS}, checked and written under the order's
-     * lock), so a redelivery doesn't add a second note or timeline entry.
-     * When `$work` throws, the id is forgotten again, so the job's retry (or
-     * PayPal's redelivery) does the work instead of skipping it.
+     * {@see self::REMEMBERED_EVENTS}), so a redelivery doesn't add a second
+     * note or timeline entry.
+     *
+     * Remembering the id and `$work`'s database writes share one
+     * transaction, which holds the order's row lock until it commits. When
+     * `$work` throws, or the worker dies part way, nothing is kept, so the
+     * job's retry (or PayPal's redelivery) does the work instead of
+     * skipping it. `$work` must make its PayPal API calls before this runs.
+     *
+     * `$work` may return a closure for what must happen after the commit
+     * (firing host hooks), so a listener sees committed data and a listener
+     * that throws can't undo, or repeat, the work.
      *
      * @since 1.0.0
      *
-     * @param  Order     $order    Order.
-     * @param  string    $eventId  Event id (empty always runs).
-     * @param  callable  $work     The event's side effects.
+     * @param  Order              $order    Order.
+     * @param  string             $eventId  Event id (empty always runs).
+     * @param  callable(): mixed  $work     The event's database side effects; may return a closure to run after commit.
      *
      * @throws Throwable Whatever `$work` throws.
      *
@@ -168,18 +178,47 @@ abstract class WebhookEventHandler
      */
     protected function once( Order $order, string $eventId, callable $work ): void
     {
-        if ( '' !== $eventId && ! PayPalOrderMeta::rememberEvent( $order, $eventId, self::REMEMBERED_EVENTS ) ) {
-            return;
-        }
+        $meta = $order->getAttribute( 'meta' );
 
         try {
-            $work();
+            $after = DB::transaction( static function () use ( $order, $eventId, $work ): mixed {
+                if ( '' !== $eventId && ! PayPalOrderMeta::rememberEvent( $order, $eventId, self::REMEMBERED_EVENTS ) ) {
+                    return null;
+                }
+
+                return $work();
+            } );
         } catch ( Throwable $exception ) {
-            if ( '' !== $eventId ) {
-                PayPalOrderMeta::forgetEvent( $order, $eventId );
-            }
+            // The writes rolled back; so must the caller's copy of the meta.
+            $order->setAttribute( 'meta', $meta );
+            $order->syncOriginalAttribute( 'meta' );
 
             throw $exception;
+        }
+
+        if ( $after instanceof Closure ) {
+            $after();
+        }
+    }
+
+    /**
+     * Fires host hook `$hook`, reporting (not rethrowing) a listener that
+     * throws: the event's work is already committed, and a retry would only
+     * repeat the hook.
+     *
+     * @since 1.0.0
+     *
+     * @param  string  $hook          Hook name.
+     * @param  mixed   ...$arguments  Hook arguments.
+     *
+     * @return void
+     */
+    protected function fire( string $hook, mixed ...$arguments ): void
+    {
+        try {
+            doAction( $hook, ...$arguments );
+        } catch ( Throwable $exception ) {
+            report( $exception );
         }
     }
 

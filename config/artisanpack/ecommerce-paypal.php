@@ -75,11 +75,19 @@ return [
     | certificate, no API call) or `postback` (ask PayPal's
     | verify-webhook-signature endpoint).
     |
+    | `webhook_tolerance_seconds` is how far a delivery's transmission time
+    | may be from now. It defaults to 3 days, PayPal's retry horizon, so
+    | PayPal's own redeliveries aren't rejected as stale; `0` turns the
+    | check off. Replays can't act twice: the signature covers the
+    | transmission id and time, and processed event ids are dropped.
+    |
     */
 
     'webhook_id' => env( 'PAYPAL_WEBHOOK_ID' ),
 
     'webhook_verification' => env( 'PAYPAL_WEBHOOK_VERIFICATION', 'local' ),
+
+    'webhook_tolerance_seconds' => (int) env( 'PAYPAL_WEBHOOK_TOLERANCE_SECONDS', 259200 ),
 
     /*
     |--------------------------------------------------------------------------

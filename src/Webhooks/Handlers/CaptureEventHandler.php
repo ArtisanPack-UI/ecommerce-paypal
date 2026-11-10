@@ -17,11 +17,13 @@ namespace ArtisanPackUI\EcommercePayPal\Webhooks\Handlers;
 
 use ArtisanPackUI\Ecommerce\Models\Order;
 use ArtisanPackUI\Ecommerce\Services\OrderNoteService;
+use ArtisanPackUI\Ecommerce\Services\PaymentOrchestrator;
 use ArtisanPackUI\EcommercePayPal\Api\Data\PayPalCapture;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalClient;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalOrderMeta;
 use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalEventMapper;
 use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalOrderLocator;
+use Closure;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -32,17 +34,26 @@ use Throwable;
  * A `PENDING` capture (an eCheck, a review hold) places the order as paid,
  * because the engine's `PaymentResult` has no pending state; the pending
  * state is kept in `orders.meta.paypal.capture_status`. This handler
- * settles it:
+ * settles it through {@see PayPalOrderMeta::transitionCapture()}, under the
+ * order's lock, so events processed out of order can't take a settled
+ * capture back to `PENDING`, and a settle that arrives before the gateway
+ * recorded the capture isn't lost:
  *
  * - `PENDING` writes a `paypal.capture_pending` timeline entry with the
- *   reason (spec: timeline note only).
- * - `COMPLETED` for a pending capture records `COMPLETED` and writes
+ *   reason (spec: timeline note only), when it recorded something new.
+ * - `COMPLETED` for an open capture records `COMPLETED` and writes
  *   `paypal.capture_completed`.
- * - `DENIED` / `DECLINED` for a pending capture records the status, writes
+ * - `DENIED` / `DECLINED` for an open capture records the status, writes
  *   `paypal.capture_denied`, adds a system note telling staff the money never
- *   arrived, and fires `ap.ecommerce.paypal.captureDenied`
- *   `(Order $order, string $captureId, string $status)`. The order status
- *   isn't changed; that's store policy.
+ *   arrived, and fails the order's payment through the engine's
+ *   `PaymentOrchestrator::recordProviderPaymentFailure()`: `payment_status`
+ *   becomes `failed`, with a `payment.capture_failed` timeline entry
+ *   (`source: provider`), the `ap.ecommerce.payment.failed` hook and the
+ *   `PaymentFailed` event. After commit it fires
+ *   `ap.ecommerce.paypal.captureDenied`
+ *   `(Order $order, string $captureId, string $status)`; a listener that
+ *   throws is reported, not rethrown. The order status, stock, and digital
+ *   deliverables aren't changed; that's store policy.
  *
  * Checkouts that aren't orders yet are settled by the engine's reconciler
  * from the outcome {@see PayPalEventMapper} reports.
@@ -68,14 +79,16 @@ class CaptureEventHandler extends WebhookEventHandler
      *
      * @since 1.0.0
      *
-     * @param  PayPalClient        $client  API client.
-     * @param  PayPalOrderLocator  $orders  Order lookup.
-     * @param  OrderNoteService    $notes   Order notes.
+     * @param  PayPalClient         $client    API client.
+     * @param  PayPalOrderLocator   $orders    Order lookup.
+     * @param  OrderNoteService     $notes     Order notes.
+     * @param  PaymentOrchestrator  $payments  Engine payments.
      */
     public function __construct(
         PayPalClient $client,
         PayPalOrderLocator $orders,
         protected OrderNoteService $notes,
+        protected PaymentOrchestrator $payments,
     ) {
         parent::__construct( $client, $orders );
     }
@@ -111,14 +124,23 @@ class CaptureEventHandler extends WebhookEventHandler
             return;
         }
 
-        $status  = (string) $capture->status();
-        $failure = in_array( $type, [ 'PAYMENT.CAPTURE.DENIED', 'PAYMENT.CAPTURE.DECLINED' ], true );
+        $status   = (string) $capture->status();
+        $expected = match ( $type ) {
+            'PAYMENT.CAPTURE.PENDING'                              => 'PENDING' === $status,
+            'PAYMENT.CAPTURE.COMPLETED'                            => 'COMPLETED' === $status,
+            'PAYMENT.CAPTURE.DENIED', 'PAYMENT.CAPTURE.DECLINED'   => in_array( $status, PayPalEventMapper::FAILED_CAPTURE_STATES, true ),
+            default                                                => false,
+        };
 
-        $this->once( $order, $eventId, fn () => match ( true ) {
-            'PAYMENT.CAPTURE.PENDING' === $type && 'PENDING' === $status                    => $this->pending( $order, $capture ),
-            'PAYMENT.CAPTURE.COMPLETED' === $type && 'COMPLETED' === $status                => $this->completed( $order, $capture ),
-            $failure && in_array( $status, PayPalEventMapper::FAILED_CAPTURE_STATES, true ) => $this->denied( $order, $capture ),
-            default                                                                         => null,
+        if ( ! $expected ) {
+            return;
+        }
+
+        $this->once( $order, $eventId, fn (): ?Closure => match ( PayPalOrderMeta::transitionCapture( $order, $capture ) ) {
+            'pending'   => $this->pending( $order, $capture ),
+            'completed' => $this->completed( $order, $capture ),
+            'denied'    => $this->denied( $order, $capture ),
+            default     => null,
         } );
     }
 
@@ -130,62 +152,49 @@ class CaptureEventHandler extends WebhookEventHandler
      * @param  Order          $order    Order.
      * @param  PayPalCapture  $capture  Capture.
      *
-     * @return void
+     * @return Closure|null Nothing to run after commit.
      */
-    protected function pending( Order $order, PayPalCapture $capture ): void
+    protected function pending( Order $order, PayPalCapture $capture ): ?Closure
     {
-        PayPalOrderMeta::merge( $order, [
-            'capture_id'     => $capture->id(),
-            'capture_status' => 'PENDING',
-            'pending_reason' => $capture->pendingReason(),
-        ] );
-
         $this->timeline( $order, 'paypal.capture_pending', [
             'capture_id' => $capture->id(),
             'reason'     => $capture->pendingReason(),
         ] );
+
+        return null;
     }
 
     /**
-     * Settles a pending capture that completed.
+     * Records a pending capture that completed.
      *
      * @since 1.0.0
      *
      * @param  Order          $order    Order.
      * @param  PayPalCapture  $capture  Capture.
      *
-     * @return void
+     * @return Closure|null Nothing to run after commit.
      */
-    protected function completed( Order $order, PayPalCapture $capture ): void
+    protected function completed( Order $order, PayPalCapture $capture ): ?Closure
     {
-        if ( ! $this->isPendingCapture( $order, $capture ) ) {
-            return;
-        }
-
-        PayPalOrderMeta::merge( $order, [ 'capture_status' => 'COMPLETED', 'pending_reason' => null ] );
-
         $this->timeline( $order, 'paypal.capture_completed', [ 'capture_id' => $capture->id() ] );
+
+        return null;
     }
 
     /**
-     * Records a pending capture PayPal denied.
+     * Records a pending capture PayPal denied, and fails the order's
+     * payment.
      *
      * @since 1.0.0
      *
      * @param  Order          $order    Order.
      * @param  PayPalCapture  $capture  Capture.
      *
-     * @return void
+     * @return Closure The hook to fire after commit.
      */
-    protected function denied( Order $order, PayPalCapture $capture ): void
+    protected function denied( Order $order, PayPalCapture $capture ): Closure
     {
-        if ( ! $this->isPendingCapture( $order, $capture ) ) {
-            return;
-        }
-
         $status = (string) $capture->status();
-
-        PayPalOrderMeta::merge( $order, [ 'capture_status' => $status, 'pending_reason' => null ] );
 
         $this->timeline( $order, 'paypal.capture_denied', [ 'capture_id' => $capture->id(), 'status' => $status ] );
 
@@ -200,22 +209,8 @@ class CaptureEventHandler extends WebhookEventHandler
             ] );
         }
 
-        doAction( self::DENIED_HOOK, $order, $capture->id(), $status );
-    }
+        $this->payments->recordProviderPaymentFailure( $order, $capture->id(), 'capture_denied', __( 'PayPal denied the pending payment.' ) );
 
-    /**
-     * Whether `$capture` is the order's capture and still recorded as pending.
-     *
-     * @since 1.0.0
-     *
-     * @param  Order          $order    Order.
-     * @param  PayPalCapture  $capture  Capture.
-     *
-     * @return bool
-     */
-    protected function isPendingCapture( Order $order, PayPalCapture $capture ): bool
-    {
-        return $capture->id() === PayPalOrderMeta::get( $order, 'capture_id' )
-            && 'PENDING' === PayPalOrderMeta::get( $order, 'capture_status' );
+        return fn () => $this->fire( self::DENIED_HOOK, $order->fresh() ?? $order, $capture->id(), $status );
     }
 }

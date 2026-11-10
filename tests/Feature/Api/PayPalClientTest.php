@@ -416,6 +416,32 @@ describe( 'errors', function (): void {
             ->and( $logged )->not->toContain( 'A21AAFakeAccessTokenForTests' )
             ->and( $logged )->not->toContain( 'client-secret' );
     } );
+
+    it( 'sends a raw body byte for byte, with the token and a redacted debug log', function (): void {
+        config( [ 'artisanpack.ecommerce-paypal.logging.debug' => true ] );
+        $raw = '{"id":"evt","url":"https://example.com/a/b","price":"10 €","resource":{"payer":{"email_address":"buyer@example.com"},"empty":{}}}';
+
+        $this->client->postRawReadOnly( '/v1/notifications/verify-webhook-signature', $raw );
+
+        $this->paypal->assertSent( 'webhooks.verify_signature', fn ( Request $request ): bool => $raw === $request->body()
+            && $request->hasHeader( 'Authorization', 'Bearer A21AAFakeAccessTokenForTests' )
+            && $request->hasHeader( 'Content-Type', 'application/json' )
+            && ! $request->hasHeader( 'PayPal-Request-Id' ) );
+
+        $records = paypalLogRecords();
+
+        expect( $records[0]->context['body']['resource']['payer']['email_address'] )->toBe( PayPalRedactor::MASK )
+            ->and( json_encode( array_map( fn ( LogRecord $record ): array => $record->context, $records ) ) )->not->toContain( 'buyer@example.com' );
+    } );
+
+    it( 'retries a raw body after a token refresh', function (): void {
+        $this->paypal->error( 'webhooks.verify_signature', 'unauthorized' );
+
+        $this->client->postRawReadOnly( '/v1/notifications/verify-webhook-signature', '{"id":"evt"}' );
+
+        expect( $this->paypal->sent( 'webhooks.verify_signature' ) )->toHaveCount( 2 )
+            ->and( array_map( fn ( Request $request ): string => $request->body(), $this->paypal->sent( 'webhooks.verify_signature' ) ) )->toBe( [ '{"id":"evt"}', '{"id":"evt"}' ] );
+    } );
 } );
 
 describe( 'typed endpoints', function (): void {
@@ -560,13 +586,13 @@ describe( 'typed endpoints', function (): void {
             'auth_algo'         => 'SHA256withRSA',
         ];
 
-        expect( $webhooks->verifySignature( $transmission, 'WH-1', [ 'id' => 'evt' ] ) )->toBeTrue();
+        expect( $webhooks->verifySignature( $transmission, 'WH-1', '{"id":"evt"}' ) )->toBeTrue();
 
         $this->paypal->assertSent( 'webhooks.verify_signature', fn ( Request $request ): bool => ! $request->hasHeader( 'PayPal-Request-Id' ) && 'WH-1' === $request['webhook_id'] );
 
         $this->paypal->respond( 'webhooks.verify_signature', 'webhooks/verify-signature-failure' );
 
-        expect( $webhooks->verifySignature( $transmission, 'WH-1', [ 'id' => 'evt' ] ) )->toBeFalse();
+        expect( $webhooks->verifySignature( $transmission, 'WH-1', '{"id":"evt"}' ) )->toBeFalse();
 
         $events = $webhooks->events( 'PAYMENT.CAPTURE.COMPLETED' );
 

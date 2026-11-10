@@ -115,6 +115,21 @@ describe( 'intent capture', function (): void {
             ->and( PayPalOrderMeta::get( $order->fresh(), 'pending_reason' ) )->toBe( 'ECHECK' );
     } );
 
+    it( 'keeps a capture a webhook already settled when the pending capture response is recorded after it', function ( string $settled ): void {
+        $this->paypal->respond( 'orders.capture', Orders::body( 'orders/captured', [
+            'purchase_units.0.payments.captures.0.status'         => 'PENDING',
+            'purchase_units.0.payments.captures.0.status_details' => [ 'reason' => 'ECHECK' ],
+        ] ) );
+
+        // The webhook settled the capture while the capture call was in flight.
+        $order = Orders::create( [], [ 'order_id' => Orders::ORDER_ID, 'capture_id' => Orders::CAPTURE_ID, 'capture_status' => $settled ] );
+
+        expect( app( PayPalWalletGateway::class )->capturePayment( $order, Orders::session() )->success )->toBeTrue()
+            ->and( PayPalOrderMeta::get( $order->fresh(), 'capture_status' ) )->toBe( $settled )
+            ->and( PayPalOrderMeta::get( $order->fresh(), 'pending_reason' ) )->toBeNull()
+            ->and( PayPalOrderMeta::get( $order->fresh(), 'capture_id' ) )->toBe( Orders::CAPTURE_ID );
+    } )->with( [ 'COMPLETED', 'DENIED' ] );
+
     it( 'fails terminally on a declined capture', function (): void {
         $this->paypal->respond( 'orders.capture', Orders::body( 'orders/captured', [ 'purchase_units.0.payments.captures.0.status' => 'DECLINED' ] ) );
 

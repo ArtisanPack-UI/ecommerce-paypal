@@ -17,7 +17,6 @@ namespace ArtisanPackUI\EcommercePayPal\Webhooks\Handlers;
 
 use ArtisanPackUI\Ecommerce\Exceptions\RefundNotAllowedException;
 use ArtisanPackUI\Ecommerce\Models\Order;
-use ArtisanPackUI\Ecommerce\Models\Refund;
 use ArtisanPackUI\Ecommerce\Services\RefundService;
 use ArtisanPackUI\EcommercePayPal\Api\Data\PayPalRefund;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalClient;
@@ -38,7 +37,14 @@ use InvalidArgumentException;
  * already has it: a refund with this PayPal refund id, or the refund its
  * `custom_id` names (one the store issued, which settles through
  * `RefundService::issue()`, even while it is still pending). The engine
- * checks both under the order's lock.
+ * checks both under the order's lock. The `custom_id` is only taken as an
+ * engine refund id when the refund's `invoice_id` is `refund-{custom_id}`,
+ * as on every refund the store issues, so a refund made elsewhere with a
+ * stray `custom_id` can't be mistaken for one of the store's.
+ *
+ * A refund the store issued that it recorded as failed (the gateway call
+ * errored or timed out) but that PayPal completed is settled by the engine;
+ * a `paypal.refund_settled` timeline entry records that.
  *
  * A reversal also writes a `paypal.capture_reversed` timeline entry. When
  * the engine refuses the refund (an over-refund, a currency mismatch), a
@@ -159,18 +165,24 @@ class RefundEventHandler extends WebhookEventHandler
                 throw new InvalidArgumentException( 'PayPal returned the refund without an amount.' );
             }
 
+            $customId = $refund->customId();
+            $issuedId = null !== $customId && 'refund-' . $customId === $refund->invoiceId() ? $customId : null;
+
             $recorded = $this->refunds->recordProviderRefund(
                 $order,
                 PayPalMoney::fromPayPal( $refund->amount() ),
                 $refund->id(),
                 is_string( $note ) ? $note : null,
-                $refund->customId(),
+                $issuedId,
             );
 
-            // The refund the store issued was settled failed (the gateway
-            // call errored), but PayPal completed it: staff must reconcile.
-            if ( ! $recorded->wasRecentlyCreated && Refund::STATUS_FAILED === $recorded->status ) {
-                throw new RefundNotAllowedException( __( 'PayPal completed refund :refund, but the store recorded it as failed.', [ 'refund' => $refund->id() ] ) );
+            // A refund the store recorded as failed, which PayPal completed:
+            // the engine settled it.
+            if ( ! $recorded->wasRecentlyCreated && $recorded->wasChanged( 'status' ) ) {
+                $this->timeline( $order, 'paypal.refund_settled', [
+                    'refund_id'       => $refund->id(),
+                    'store_refund_id' => $recorded->getKey(),
+                ] );
             }
         } catch ( RefundNotAllowedException|InvalidArgumentException $exception ) {
             Log::channel( self::logChannel() )->warning( 'A PayPal refund could not be recorded on its order.', [
