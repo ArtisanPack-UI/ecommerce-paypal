@@ -214,7 +214,10 @@ abstract class PayPalPaymentDriver extends PaymentDriver
     }
 
     /**
-     * Swaps the cart's Order for one created with the new "save" choice.
+     * Swaps the cart's Order for one created with the new "save" choice,
+     * passed as a payment option, the same path API storefronts take. The
+     * gateway records the choice inside the checkout's transaction, so a
+     * failure leaves the old choice in place.
      *
      * @since 1.0.0
      *
@@ -227,21 +230,15 @@ abstract class PayPalPaymentDriver extends PaymentDriver
      */
     protected function replaceOrder( Cart $cart, PayPalGateway $gateway, PayPalVault $vault, bool $save ): ?PaymentSession
     {
-        $vault->rememberChoice( $cart, $save );
-
         try {
-            $session = $this->replaceSession( $cart, $gateway );
+            return $this->replaceSession( $cart, $gateway, [
+                CheckoutService::PAYMENT_OPTIONS => [ PayPalGateway::SAVE_OPTION => $save ],
+            ] );
         } catch ( Throwable $exception ) {
             report( $exception );
 
-            $session = null;
+            return null;
         }
-
-        if ( null === $session ) {
-            $vault->rememberChoice( $cart->refresh(), ! $save );
-        }
-
-        return $session;
     }
 
     /**

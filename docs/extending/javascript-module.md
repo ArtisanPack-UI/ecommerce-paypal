@@ -231,7 +231,47 @@ Wrappers should match the Livewire drivers' accessibility: a labelled group, pol
 
 ## Saved methods in React and Vue
 
-Shoppers manage saved methods through the [REST endpoints](Vaulting#rest-endpoints), and a returning PayPal buyer's `user_id_token` comes in the client config. In this release, ticking "save" during checkout and paying with a saved card are handled by the Livewire drivers; the engine's REST session endpoint doesn't take the save choice or a saved card.
+Shoppers manage saved methods through the [REST endpoints](Vaulting#rest-endpoints), and a returning PayPal buyer's `user_id_token` comes in the client config. Saving during checkout and paying with a saved card go through the session call's `payment_options` (see [From API storefronts](Vaulting#from-api-storefronts)):
+
+```jsx
+// `api( method, path, body )` is your storefront's fetch wrapper, which adds
+// the shopper's Sanctum token and an Idempotency-Key.
+async function startPayment( cart, { saveCard, savedCardId } ) {
+    const options = savedCardId
+        ? { saved_payment_method: savedCardId }
+        : { save_payment_method: saveCard };
+
+    const { checkout } = await api( 'POST', `/checkout/${ cart }/session`, {
+        return_url: `${ location.origin }/checkout/return`,
+        payment_options: options,
+    } );
+
+    return checkout.payment;
+}
+
+export function CardStep( { cart, savedCards, onPlaced, onFailed } ) {
+    const [ choice, setChoice ] = useState( savedCards[ 0 ]?.id ?? 'new' );
+    const [ saveCard, setSaveCard ] = useState( false );
+
+    const payWithSavedCard = async () => {
+        try {
+            const payment = await startPayment( cart, { savedCardId: choice } );
+            // No card fields: the Order pays with the saved card's vault id.
+            onPlaced( await api( 'POST', `/checkout/${ cart }/finalize`, { payment_reference: payment.reference } ) );
+        } catch ( error ) {
+            // 422 saved-payment-method-unavailable / -invalid: pick another card.
+            onFailed( error );
+        }
+    };
+
+    // For a new card, create the session with the "save" choice (again
+    // whenever it changes), then mount the card fields with
+    // `payment.client` as in the examples above.
+    // …
+}
+```
+
+Fetch `savedCards` from `GET me/paypal/payment-methods` and keep only `method: 'card'`. Send `payment_options` again whenever the shopper ticks or unticks "save" or picks another card: the server keeps the PayPal Order while the options match and replaces it when they change, so always mount with the latest `payment.client`.
 
 ## Building the module
 
