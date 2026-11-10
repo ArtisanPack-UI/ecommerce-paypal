@@ -50,12 +50,26 @@
 
         const focusHeading = () => document.getElementById( settings.heading )?.focus();
 
+        // Focus is lost when it sits on the page body or on an element that
+        // has since left the page.
+        const focusLost = () => {
+            const active = document.activeElement;
+
+            return ! active || active === document.body || ! active.isConnected;
+        };
+
         $wire.on( 'payment-failed', ( event ) => {
             // An ineligible wallet was already explained politely.
             if ( quiet ) {
                 quiet = false;
 
                 return;
+            }
+
+            // A closed wallet sheet can leave focus on the page body: keep
+            // it on the payment step, without taking it from another control.
+            if ( focusLost() ) {
+                focusHeading();
             }
 
             announce( errorBox, event?.message || settings.messages.failed );

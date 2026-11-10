@@ -77,10 +77,13 @@ describe( 'install', function (): void {
         $this->artisan( 'ecommerce-paypal:install', [ '--no-interaction' => true ] )
             ->doesntExpectOutputToContain( 'Overwrite it?' )
             ->expectsOutputToContain( 'ecommerce-paypal/resources/views/**/*.blade.php' )
-            ->expectsOutputToContain( 'script-src https://www.paypal.com https://*.paypal.com https://applepay.cdn-apple.com https://pay.google.com' )
-            ->expectsOutputToContain( 'frame-src https://*.paypal.com https://pay.google.com' )
-            ->expectsOutputToContain( 'connect-src https://*.paypal.com' )
-            ->expectsOutputToContain( 'img-src https://*.paypalobjects.com' )
+            ->expectsOutputToContain( 'script-src https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com https://applepay.cdn-apple.com https://pay.google.com' )
+            ->expectsOutputToContain( 'style-src https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com' )
+            ->expectsOutputToContain( 'connect-src https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com' )
+            ->expectsOutputToContain( 'frame-src https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com https://pay.google.com' )
+            ->expectsOutputToContain( 'child-src https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com' )
+            ->expectsOutputToContain( 'img-src https://*.paypal.com https://*.paypalobjects.com https://*.venmo.com data:' )
+            ->expectsOutputToContain( 'Also allow your nonce (or \'unsafe-inline\') in script-src and style-src.' )
             ->expectsOutputToContain( 'Skipped the migrations' )
             ->assertSuccessful();
 

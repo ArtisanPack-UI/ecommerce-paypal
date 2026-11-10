@@ -51,17 +51,24 @@ class InstallCommand extends Command
     ];
 
     /**
-     * Content-Security-Policy sources the PayPal JS SDK needs (spec §9.1).
+     * Content-Security-Policy sources the PayPal JS SDK needs: PayPal's
+     * published v5 list (`*.paypal.com`, `*.paypalobjects.com`,
+     * `*.venmo.com` on every directive, plus `data:` images), and the Apple
+     * Pay and Google Pay scripts and frames the wallets load. PayPal also
+     * needs `'unsafe-inline'` or the page's nonce in `script-src` and
+     * `style-src`, which the command prints under the list.
      *
      * @since 1.0.0
      *
      * @var array<string, array<int, string>>
      */
     public const CSP = [
-        'script-src'  => [ 'https://www.paypal.com', 'https://*.paypal.com', 'https://applepay.cdn-apple.com', 'https://pay.google.com' ],
-        'frame-src'   => [ 'https://*.paypal.com', 'https://pay.google.com' ],
-        'connect-src' => [ 'https://*.paypal.com' ],
-        'img-src'     => [ 'https://*.paypalobjects.com' ],
+        'script-src'  => [ 'https://*.paypal.com', 'https://*.paypalobjects.com', 'https://*.venmo.com', 'https://applepay.cdn-apple.com', 'https://pay.google.com' ],
+        'style-src'   => [ 'https://*.paypal.com', 'https://*.paypalobjects.com', 'https://*.venmo.com' ],
+        'connect-src' => [ 'https://*.paypal.com', 'https://*.paypalobjects.com', 'https://*.venmo.com' ],
+        'frame-src'   => [ 'https://*.paypal.com', 'https://*.paypalobjects.com', 'https://*.venmo.com', 'https://pay.google.com' ],
+        'child-src'   => [ 'https://*.paypal.com', 'https://*.paypalobjects.com', 'https://*.venmo.com' ],
+        'img-src'     => [ 'https://*.paypal.com', 'https://*.paypalobjects.com', 'https://*.venmo.com', 'data:' ],
     ];
 
     /**
@@ -198,6 +205,8 @@ class InstallCommand extends Command
         foreach ( self::CSP as $directive => $sources ) {
             $this->line( '    ' . $directive . ' ' . implode( ' ', $sources ) );
         }
+
+        $this->line( '    ' . __( 'Also allow your nonce (or \'unsafe-inline\') in script-src and style-src. The checkout module gives PayPal\'s script the nonce of your page\'s scripts.' ) );
     }
 
     /**

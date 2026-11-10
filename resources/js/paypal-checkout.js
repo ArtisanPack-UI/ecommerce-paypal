@@ -8,7 +8,11 @@
  *
  *     { driver, flow, publishable_key, client_secret, options: { order_id,
  *       amount, currency, intent, mode, locale, components, enable_funding,
- *       disable_funding, button?, user_id_token?, ... } }
+ *       disable_funding, button?, user_id_token?, csp_nonce?, ... } }
+ *
+ * Scripts it adds carry the page's Content-Security-Policy nonce: `csp_nonce`
+ * when the host passes one, otherwise the nonce of a script already on the
+ * page (see `cspNonce()`).
  *
  * The PayPal JS SDK (v5, `https://www.paypal.com/sdk/js`) is loaded once per
  * page for a given client id, currency, and intent. The Order is always
@@ -180,8 +184,32 @@ function loadKey( config ) {
 }
 
 /**
+ * The Content-Security-Policy nonce for scripts this module adds: `override`
+ * (a host's `csp_nonce` option) or the nonce of a script already on the
+ * page, such as Livewire's or Vite's. Empty when the page uses none.
+ *
+ * @since 1.0.0
+ *
+ * @param {string} [override] Nonce to use.
+ *
+ * @returns {string}
+ */
+export function cspNonce( override = '' ) {
+    if ( override ) {
+        return String( override );
+    }
+
+    const nonced = document.querySelector( 'script[nonce]' );
+
+    // Browsers hide the attribute's value once the page loads; the
+    // property keeps it.
+    return nonced ? String( nonced.nonce || nonced.getAttribute( 'nonce' ) || '' ) : '';
+}
+
+/**
  * Appends a script and resolves once it loaded. A failed load is removed so
- * a later call can try again.
+ * a later call can try again. The script carries the page's CSP nonce, so a
+ * nonce-based `script-src` allows it.
  *
  * @param {string}                 src        Script URL.
  * @param {Record<string, string>} attributes Extra attributes.
@@ -191,11 +219,21 @@ function loadKey( config ) {
 function appendScript( src, attributes = {} ) {
     return new Promise( ( resolve, reject ) => {
         const script = document.createElement( 'script' );
+        const nonce  = cspNonce( attributes.nonce );
 
         script.src   = src;
         script.async = true;
 
+        if ( nonce ) {
+            script.nonce = nonce;
+            script.setAttribute( 'nonce', nonce );
+        }
+
         for ( const [ name, value ] of Object.entries( attributes ) ) {
+            if ( 'nonce' === name ) {
+                continue;
+            }
+
             script.setAttribute( name, value );
         }
 
@@ -270,6 +308,14 @@ export function loadSdk( config, { components = [] } = {} ) {
 
     if ( options.partner_attribution_id ) {
         attrs[ 'data-partner-attribution-id' ] = String( options.partner_attribution_id );
+    }
+
+    // PayPal styles its buttons with this nonce under a nonce-based CSP.
+    const nonce = cspNonce( options.csp_nonce );
+
+    if ( nonce ) {
+        attrs.nonce               = nonce;
+        attrs[ 'data-csp-nonce' ] = nonce;
     }
 
     const entry = { components: merged, namespace, promise: null };

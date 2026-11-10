@@ -220,3 +220,66 @@ jobs:
             echo "dist/ is out of date. Run npm run build and commit it."
             exit 1
           fi
+
+  browser:
+    runs-on: ubuntu-latest
+    # A browser step that never resolves can wait indefinitely, so cap it.
+    timeout-minutes: 20
+    name: Browser
+
+    # Accessibility and keyboard checks of the drivers and the account page
+    # (tests/Browser, without the `sandbox` group). PayPal is faked, so no
+    # credentials are needed; the sandbox journeys run in sandbox.yml.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: '8.4'
+          extensions: dom, curl, libxml, mbstring, zip, pdo, sqlite, pdo_sqlite, intl, sockets
+          coverage: none
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-browser-composer-${{ hashFiles('**/composer.json') }}
+          restore-keys: ${{ runner.os }}-browser-composer-
+
+      - name: Install PHP dependencies
+        run: composer update --no-interaction --prefer-dist
+
+      - name: Install npm dependencies and Chromium
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Build the browser stylesheet
+        run: npm run build:browser
+
+      - name: Run browser tests
+        timeout-minutes: 10
+        env:
+          XDEBUG_MODE: off
+        run: vendor/bin/pest --testsuite=Browser --group=browser --exclude-group=sandbox --no-coverage
+
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: browser-screenshots
+          path: tests/Browser/Screenshots
+          if-no-files-found: ignore
+          retention-days: 14

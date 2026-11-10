@@ -63,6 +63,15 @@
     "cs": "./vendor/bin/phpcs",
     "cs:fix": "./vendor/bin/phpcbf",
     "test": "./vendor/bin/pest --testsuite=Unit,Feature",
+    "test:sandbox": "./vendor/bin/pest --testsuite=Sandbox --group=sandbox",
+    "test:browser": [
+      "npm run build:browser",
+      "./vendor/bin/pest --testsuite=Browser --group=browser --exclude-group=sandbox"
+    ],
+    "test:browser:sandbox": [
+      "npm run build:browser",
+      "./vendor/bin/pest --testsuite=Browser --group=sandbox"
+    ],
     "ecommerce:verify-satellite": "ecommerce-verify-satellite"
   },
   "config": {

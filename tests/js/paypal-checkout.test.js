@@ -4,7 +4,9 @@ import {
     GOOGLE_PAY_SDK_URL,
     SDK_URL,
     cardFieldStyle,
+    cspNonce,
     loadSdk,
+    loadScript,
     mountApplePay,
     mountButtons,
     mountCardFields,
@@ -194,6 +196,51 @@ describe( 'loading', () => {
         expect( script.getAttribute( 'data-user-id-token' ) ).toBe( 'id-token' );
         expect( script.getAttribute( 'data-partner-attribution-id' ) ).toBe( 'BN-CODE' );
         expect( script.src ).not.toContain( 'id-token' );
+    } );
+
+    it( 'adds no nonce when the page uses none', () => {
+        loadSdk( clientConfig() );
+
+        const script = sdkScripts()[ 0 ];
+
+        expect( script.hasAttribute( 'nonce' ) ).toBe( false );
+        expect( script.hasAttribute( 'data-csp-nonce' ) ).toBe( false );
+        expect( cspNonce() ).toBe( '' );
+    } );
+
+    it( 'gives the SDK the page\'s CSP nonce, as nonce and data-csp-nonce', () => {
+        const nonced = document.createElement( 'script' );
+        nonced.setAttribute( 'nonce', 'page-nonce' );
+        document.head.appendChild( nonced );
+
+        loadSdk( clientConfig() );
+
+        const script = sdkScripts()[ 0 ];
+
+        expect( script.getAttribute( 'nonce' ) ).toBe( 'page-nonce' );
+        expect( script.getAttribute( 'data-csp-nonce' ) ).toBe( 'page-nonce' );
+    } );
+
+    it( 'prefers the host\'s csp_nonce option over the page\'s', () => {
+        const nonced = document.createElement( 'script' );
+        nonced.setAttribute( 'nonce', 'page-nonce' );
+        document.head.appendChild( nonced );
+
+        loadSdk( clientConfig( { csp_nonce: 'host-nonce' } ) );
+
+        expect( sdkScripts()[ 0 ].getAttribute( 'data-csp-nonce' ) ).toBe( 'host-nonce' );
+    } );
+
+    it( 'gives other scripts it loads the page\'s CSP nonce', () => {
+        const nonced = document.createElement( 'script' );
+        nonced.setAttribute( 'nonce', 'page-nonce' );
+        document.head.appendChild( nonced );
+
+        loadScript( GOOGLE_PAY_SDK_URL );
+
+        const script = [ ...document.head.querySelectorAll( 'script' ) ].find( ( element ) => element.src === GOOGLE_PAY_SDK_URL );
+
+        expect( script.getAttribute( 'nonce' ) ).toBe( 'page-nonce' );
     } );
 
     it( 'lets a later call retry after the script failed to load', async () => {

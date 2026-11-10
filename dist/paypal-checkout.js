@@ -46,12 +46,27 @@ function loadKey(config) {
   params.delete("components");
   return [params.toString(), options.user_id_token || "", options.partner_attribution_id || ""].join("|");
 }
+function cspNonce(override = "") {
+  if (override) {
+    return String(override);
+  }
+  const nonced = document.querySelector("script[nonce]");
+  return nonced ? String(nonced.nonce || nonced.getAttribute("nonce") || "") : "";
+}
 function appendScript(src, attributes = {}) {
   return new Promise((resolve, reject) => {
     const script = document.createElement("script");
+    const nonce = cspNonce(attributes.nonce);
     script.src = src;
     script.async = true;
+    if (nonce) {
+      script.nonce = nonce;
+      script.setAttribute("nonce", nonce);
+    }
     for (const [name, value] of Object.entries(attributes)) {
+      if ("nonce" === name) {
+        continue;
+      }
       script.setAttribute(name, value);
     }
     script.addEventListener("load", () => resolve());
@@ -90,6 +105,11 @@ function loadSdk(config, { components = [] } = {}) {
   }
   if (options.partner_attribution_id) {
     attrs["data-partner-attribution-id"] = String(options.partner_attribution_id);
+  }
+  const nonce = cspNonce(options.csp_nonce);
+  if (nonce) {
+    attrs.nonce = nonce;
+    attrs["data-csp-nonce"] = nonce;
   }
   const entry = { components: merged, namespace, promise: null };
   entry.promise = appendScript(sdkUrl(config, [...merged]), attrs).then(() => {
@@ -335,6 +355,7 @@ export {
   GOOGLE_PAY_SDK_URL,
   SDK_URL,
   cardFieldStyle,
+  cspNonce,
   loadScript,
   loadSdk,
   mountApplePay,

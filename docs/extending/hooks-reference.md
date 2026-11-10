@@ -1,4 +1,8 @@
-# Hooks and filters
+---
+title: Hooks Reference
+---
+
+# Hooks Reference
 
 `artisanpack-ui/ecommerce-paypal` exposes its extension points through
 [`artisanpack-ui/hooks`](https://github.com/ArtisanPack-UI/hooks). Every hook
@@ -8,6 +12,9 @@ Register callbacks in a service provider's `boot()` method. Filters must
 return a value. Actions return nothing.
 
 ```php
+use ArtisanPackUI\Ecommerce\Models\Cart;
+use ArtisanPackUI\EcommercePayPal\Gateways\PayPalGateway;
+
 addFilter( 'ap.ecommerce.paypal.orderPayload', function ( array $payload, Cart $cart, PayPalGateway $gateway ): array {
     // …
     return $payload;
@@ -16,6 +23,9 @@ addFilter( 'ap.ecommerce.paypal.orderPayload', function ( array $payload, Cart $
 
 Pass the accepted-argument count (the fourth argument) when your callback
 takes more than one parameter.
+
+For worked examples of the availability hooks, see
+[Availability](Extending-Availability).
 
 ## Hooks this package fires
 
@@ -34,7 +44,7 @@ takes more than one parameter.
 
 ### `ap.ecommerce.paypal.orderPayload`
 
-Filters the `POST /v2/checkout/orders` body before it is sent (spec §7.1).
+Filters the `POST /v2/checkout/orders` body before it is sent.
 Return the full payload.
 
 | # | Parameter | Type | Description |
@@ -60,12 +70,11 @@ Order. PayPal requires the breakdown to add up to `amount.value`.
 ### `ap.ecommerce.paypal.clientOptions`
 
 Filters the `options` of the client config the storefront drivers and
-`paypal-checkout.js` read (spec §9.1), for example button style or extra
-SDK settings.
+`paypal-checkout.js` read, for example button style or extra SDK settings.
 
 | # | Parameter | Type | Description |
 |---|---|---|---|
-| 1 | `$options` | `array` | SDK and driver options: `order_id`, `amount`, `currency`, `intent`, `mode`, `locale`, `components`, `enable_funding`, `disable_funding`, `restart`, `vault`, `user_id_token`, plus driver options |
+| 1 | `$options` | `array` | SDK and driver options: `order_id`, `amount`, `currency`, `intent`, `mode`, `locale`, `components`, `enable_funding`, `disable_funding`, `restart`, `vault`, `user_id_token`, plus driver options (`button`, `pay_later`, `venmo` for the buttons; `three_d_secure`, `require_liability_shift` for cards). `paypal-checkout.js` also reads `buyer_country` (sandbox only) and `partner_attribution_id` when you add them |
 | 2 | `$cart` | `ArtisanPackUI\Ecommerce\Models\Cart` | The cart being paid for |
 | 3 | `$session` | `ArtisanPackUI\Ecommerce\ValueObjects\PaymentSession` | The payment session |
 | 4 | `$gateway` | `ArtisanPackUI\EcommercePayPal\Gateways\PayPalGateway` | The gateway |
@@ -76,7 +85,10 @@ and Order id outside `options` aren't passed to it.
 
 ```php
 addFilter( 'ap.ecommerce.paypal.clientOptions', function ( array $options ): array {
-    $options['style'] = [ 'layout' => 'horizontal', 'color' => 'black' ];
+    // The PayPal buttons read their style from `button`.
+    if ( isset( $options['button'] ) ) {
+        $options['button'] = [ 'layout' => 'horizontal', 'color' => 'black' ];
+    }
 
     return $options;
 } );
@@ -84,7 +96,7 @@ addFilter( 'ap.ecommerce.paypal.clientOptions', function ( array $options ): arr
 
 ### `ap.ecommerce.paypal.supportedCurrencies`
 
-Filters the currencies a payment method accepts (spec §6.2). A gateway is
+Filters the currencies a payment method accepts. A gateway is
 hidden at checkout for carts in other currencies.
 
 | # | Parameter | Type | Description |
@@ -132,7 +144,7 @@ entry are written.
 
 Fires once per authorization, from the daily
 `ecommerce-paypal:authorizations:reauthorize` run, when an uncaptured
-authorization is within 2 days of expiring (spec §7.4).
+authorization is within 2 days of expiring.
 
 | # | Parameter | Type | Description |
 |---|---|---|---|
@@ -142,7 +154,7 @@ authorization is within 2 days of expiring (spec §7.4).
 ### `ap.ecommerce.paypal.disputeCreated` / `disputeUpdated` / `disputeResolved`
 
 Fire for `CUSTOMER.DISPUTE.CREATED`, `.UPDATED`, and `.RESOLVED`, after the
-order note and timeline entry are written (spec §8.3). Disputes never
+order note and timeline entry are written. Disputes never
 change the order status, so these hooks are where store policy goes.
 
 | # | Parameter | Type | Description |
@@ -178,7 +190,7 @@ PayPal before acting on it, as this package's handlers do.
 
 The engine filters the gateways offered for a cart. This package uses it
 to hide a PayPal method that is switched off, or that doesn't accept the
-cart's currency (spec §6.2). Buyer-country eligibility is decided by the
+cart's currency. Buyer-country eligibility is decided by the
 PayPal JS SDK in the browser. Hosts can use the filter too.
 
 | # | Parameter | Type | Description |
@@ -224,7 +236,7 @@ use ArtisanPackUI\EcommercePayPal\Gateways\PayPalGateway;
 
 addFilter( 'ap.ecommerce.payment.clientConfig', function ( ?array $config, $gateway ): ?array {
     if ( $gateway instanceof PayPalGateway && null !== $config ) {
-        $config['options']['style'] = [ 'shape' => 'pill' ];
+        $config['options']['button']['shape'] = 'pill';
     }
 
     return $config;

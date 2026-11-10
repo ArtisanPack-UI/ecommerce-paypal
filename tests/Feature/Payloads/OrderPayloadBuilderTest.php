@@ -259,15 +259,21 @@ it( 'resolves the locale to one PayPal supports', function ( string $locale, str
     [ 'en_ZZ', 'en-US' ],
 ] );
 
-it( 'falls back to the storefront checkout routes', function (): void {
+it( 'falls back to the storefront checkout return route for both URLs', function (): void {
     Route::get( 'shop/checkout/return', fn () => '' )->name( OrderPayloadBuilder::STOREFRONT_RETURN_ROUTE );
-    Route::get( 'shop/checkout', fn () => '' )->name( OrderPayloadBuilder::STOREFRONT_CANCEL_ROUTE );
     app( 'router' )->getRoutes()->refreshNameLookups();
 
     $context = paypalPayload( CartBuilder::make( [ [ 'Shirt', 1000, 1 ] ] ) )['payment_source']['paypal']['experience_context'];
 
     expect( $context['return_url'] )->toEndWith( '/shop/checkout/return' )
-        ->and( $context['cancel_url'] )->toEndWith( '/shop/checkout' );
+        ->and( $context['cancel_url'] )->toEndWith( '/shop/checkout/return' );
+} );
+
+it( 'cancels to the given return URL when no cancel URL is given', function (): void {
+    $context = paypalPayload( CartBuilder::make( [ [ 'Shirt', 1000, 1 ] ] ), context: [ 'return_url' => 'https://shop.test/return' ] )['payment_source']['paypal']['experience_context'];
+
+    expect( $context['return_url'] )->toBe( 'https://shop.test/return' )
+        ->and( $context['cancel_url'] )->toBe( 'https://shop.test/return' );
 } );
 
 it( 'shapes the payment source per gateway', function (): void {
@@ -283,7 +289,7 @@ it( 'shapes the payment source per gateway', function (): void {
         ] ] )
         ->and( paypalPayload( $cart, PayPalCardGateway::class )['payment_source']['card']['experience_context'] )->toBe( [
             'return_url' => route( 'artisanpack.ecommerce.storefront.checkout.return' ),
-            'cancel_url' => route( 'artisanpack.ecommerce.storefront.checkout' ),
+            'cancel_url' => route( 'artisanpack.ecommerce.storefront.checkout.return' ),
         ] )
         ->and( paypalPayload( $cart, PayPalApplePayGateway::class ) )->not->toHaveKey( 'payment_source' )
         ->and( paypalPayload( $cart, context: [ 'payment_source' => 'venmo' ] )['payment_source'] )->toHaveKey( 'venmo' );

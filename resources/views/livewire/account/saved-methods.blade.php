@@ -42,7 +42,7 @@
                             @endif
 
                             @if ( $method['expired'] )
-                                <x-artisanpack-badge :value="__( 'Expired' )" class="badge-warning badge-soft" data-paypal-saved-method-expired />
+                                <x-artisanpack-badge :value="__( 'Expired' )" class="badge-warning badge-soft text-base-content!" data-paypal-saved-method-expired />
                             @endif
                         </div>
                     </div>
