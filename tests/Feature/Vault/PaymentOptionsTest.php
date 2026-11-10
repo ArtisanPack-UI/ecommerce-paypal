@@ -47,7 +47,11 @@ beforeEach( function (): void {
  */
 function optionsGateway( string $key ): PayPalGateway
 {
-    return app( PaymentGatewayRegistry::class )->get( $key );
+    $gateway = app( PaymentGatewayRegistry::class )->get( $key );
+
+    assert( $gateway instanceof PayPalGateway );
+
+    return $gateway;
 }
 
 /**
@@ -61,6 +65,8 @@ function optionsGateway( string $key ): PayPalGateway
 function apiShopperCart( string $gateway = 'paypal-card' ): array
 {
     $customer = Customer::factory()->create( [ 'user_id' => 7 ] );
+
+    assert( $customer instanceof Customer );
 
     test()->actingAs( new GenericUser( [ 'id' => 7 ] ), 'sanctum' );
 
@@ -273,5 +279,87 @@ describe( 'REST session', function (): void {
 
         expect( $orders )->toHaveCount( 2 )
             ->and( $orders[1]['payment_source']['card']['vault_id'] ?? null )->toBe( 'tok-saved' );
+    } );
+} );
+
+/**
+ * Creates the payment session through the GraphQL `createPaymentSession`
+ * mutation, with `payment_options` as a variable (`null` when left unset).
+ *
+ * @param  Cart                       $cart     Cart.
+ * @param  array<string, mixed>|null  $options  Options.
+ *
+ * @return TestResponse
+ */
+function graphqlSession( Cart $cart, ?array $options ): TestResponse
+{
+    return test()->postJson( '/graphql/ecommerce', [
+        'query'     => 'mutation ($t: String!, $o: JSON) { createPaymentSession(input: { cart_token: $t, payment_options: $o }) { session { reference } errors { code } } }',
+        'variables' => [ 't' => $cart->token, 'o' => $options ],
+    ] );
+}
+
+describe( 'GraphQL session', function (): void {
+    it( 'asks PayPal to vault the card', function (): void {
+        [ , $cart ] = apiShopperCart( 'paypal-card' );
+        answerOrders( $this->paypal );
+
+        graphqlSession( $cart, [ PayPalGateway::SAVE_OPTION => true ] )->assertJsonPath( 'data.createPaymentSession.errors', [] );
+
+        expect( createdOrders( $this->paypal )[0]['payment_source']['card']['attributes']['vault'] ?? null )->toBe( [ 'store_in_vault' => 'ON_SUCCESS' ] );
+    } );
+
+    it( 'pays with the shopper\'s saved card', function (): void {
+        [ $customer, $cart ] = apiShopperCart( 'paypal-card' );
+        $card                = PayPalPaymentToken::factory()->create( [ 'customer_id' => $customer->id, 'paypal_token_id' => 'tok-saved' ] );
+        answerOrders( $this->paypal );
+
+        graphqlSession( $cart, [ PayPalGateway::SAVED_METHOD_OPTION => $card->id ] )->assertJsonPath( 'data.createPaymentSession.errors', [] );
+
+        expect( createdOrders( $this->paypal )[0]['payment_source']['card']['vault_id'] ?? null )->toBe( 'tok-saved' );
+    } );
+
+    it( 'answers refusals with their codes, without creating an Order', function ( Closure $setUp, string $code ): void {
+        [ $cart, $options ] = $setUp();
+
+        graphqlSession( $cart, $options )->assertJsonPath( 'data.createPaymentSession.errors.0.code', $code );
+
+        $this->paypal->assertNotSent( 'orders.create' );
+    } )->with( [
+        'another shopper\'s card' => [ function (): array {
+            [ , $cart ] = apiShopperCart( 'paypal-card' );
+
+            return [ $cart, [ PayPalGateway::SAVED_METHOD_OPTION => PayPalPaymentToken::factory()->create( [ 'customer_id' => Customer::factory()->create()->id ] )->id ] ];
+        }, PayPalSavedMethodException::UNAVAILABLE ],
+        'a guest saving'          => [ fn (): array => [ readyForSession( PayPalWebhooks::pendingCart( 'paypal-card' ) ), [ PayPalGateway::SAVE_OPTION => true ] ], 'payment-options-invalid' ],
+        'saving on Google Pay'    => [ fn (): array => [ apiShopperCart( 'paypal-google-pay' )[1], [ PayPalGateway::SAVE_OPTION => true ] ], 'payment-options-invalid' ],
+    ] );
+
+    it( 'removes a saved card PayPal rejects', function (): void {
+        [ $customer, $cart ] = apiShopperCart( 'paypal-card' );
+        $card                = PayPalPaymentToken::factory()->create( [ 'customer_id' => $customer->id, 'paypal_token_id' => 'tok-dead' ] );
+        $this->paypal->respond( 'orders.create', Orders::issue( 'TOKEN_ID_NOT_FOUND' ), 422 );
+
+        graphqlSession( $cart, [ PayPalGateway::SAVED_METHOD_OPTION => $card->id ] )
+            ->assertJsonPath( 'data.createPaymentSession.errors.0.code', PayPalSavedMethodException::INVALID );
+
+        expect( $card->refresh()->trashed() )->toBeTrue();
+    } );
+
+    it( 'reuses the Order while the options stay the same (or are null), and replaces it when they change', function (): void {
+        [ , $cart ] = apiShopperCart( 'paypal-card' );
+        answerOrders( $this->paypal, 8 );
+
+        $first = graphqlSession( $cart, [ PayPalGateway::SAVE_OPTION => true ] )->json( 'data.createPaymentSession.session.reference' );
+
+        graphqlSession( $cart, [ PayPalGateway::SAVE_OPTION => true ] )->assertJsonPath( 'data.createPaymentSession.session.reference', $first );
+        graphqlSession( $cart, null )->assertJsonPath( 'data.createPaymentSession.session.reference', $first );
+
+        expect( createdOrders( $this->paypal ) )->toHaveCount( 1 );
+
+        graphqlSession( $cart, [ PayPalGateway::SAVE_OPTION => false ] )->assertJsonPath( 'data.createPaymentSession.errors', [] );
+
+        expect( createdOrders( $this->paypal ) )->toHaveCount( 2 )
+            ->and( app( PayPalVault::class )->wantsToSave( $cart->refresh() ) )->toBeFalse();
     } );
 } );
