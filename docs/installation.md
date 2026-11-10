@@ -58,6 +58,12 @@ The config loads under `artisanpack.ecommerce-paypal`:
 config( 'artisanpack.ecommerce-paypal.intent' ); // 'capture'
 ```
 
+The migrations load from the package, so publishing them is optional. If your app calls the engine's `Ecommerce::ignoreMigrations()`, the package's migrations aren't loaded either: publish them and run them from their folder, which `php artisan migrate` doesn't scan on its own. `php artisan ecommerce-paypal:install --migrate` does both for you; by hand:
+
+```bash
+php artisan migrate --path=database/migrations/ecommerce-paypal
+```
+
 Views and translations load under the `ecommerce-paypal::` namespace. A published view doesn't pick up fixes in later releases, so prefer the [extension points](Extending).
 
 ## Tables
@@ -80,7 +86,7 @@ No card number, CVV, or other card data is ever stored. Payment details for an o
 
 ## Uninstalling
 
-The package registers a satellite uninstaller with the engine. `php artisan ecommerce:satellite:uninstall` keeps the PayPal data by default, so a reinstall picks up the stored customers and saved methods. With `--purge`, after the engine's confirmation, the current mode's saved tokens are deleted at PayPal, and the engine then rolls back the package's migrations (dropping both tables).
+The package registers a satellite uninstaller with the engine. `php artisan ecommerce:satellite:uninstall` keeps the PayPal data by default, so a reinstall picks up the stored customers and saved methods. With `--purge`, after the engine's confirmation, the current mode's saved tokens are deleted at PayPal (methods already removed are skipped, since PayPal deleted them), and the engine then rolls back the package's migrations (dropping both tables). If PayPal can't delete a token, the uninstall stops with an error saying how many tokens PayPal couldn't delete, and nothing is dropped; run the uninstall again. Tokens of the other mode can't be deleted with the current credentials; they are logged as a `warning`, and the purge goes ahead, so delete them in that mode's PayPal account.
 
 ## Next steps
 

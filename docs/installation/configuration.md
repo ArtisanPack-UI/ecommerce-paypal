@@ -22,6 +22,7 @@ Every key has a default, so you only need the keys you change. Most keys are als
 | `client_secret` | `PAYPAL_CLIENT_SECRET` | `null` | The REST app's secret. Never leaves the server. |
 | `webhook_id` | `PAYPAL_WEBHOOK_ID` | `null` | The id `ecommerce-paypal:webhooks:register` prints. Comma-separate several ids during a rotation; a delivery signed for any of them is accepted. |
 | `webhook_verification` | `PAYPAL_WEBHOOK_VERIFICATION` | `'local'` | `local` checks the signature against PayPal's certificate with no API call. `postback` asks PayPal's `verify-webhook-signature` endpoint instead. Any other value means `local`. See [Webhooks](Webhooks). |
+| `webhook_tolerance_seconds` | `PAYPAL_WEBHOOK_TOLERANCE_SECONDS` | `259200` (3 days) | How far a webhook's transmission time may be from now before it is refused as `stale_transmission`. The default is PayPal's redelivery horizon, so PayPal's retries aren't refused. `0` turns the check off; a non-numeric value means the default. See [Webhooks](Webhooks#transmission-time). |
 | `intent` | `PAYPAL_INTENT` | `'capture'` | `capture` or `authorize`. See [Intent](#intent-capture-or-authorize). |
 | `brand_name` | `PAYPAL_BRAND_NAME` | `null` | The name on PayPal's pages and the Apple Pay sheet. Empty falls back to the engine's store name (`artisanpack.ecommerce.notifications.store_name`), then `app.name`. |
 | `soft_descriptor` | `PAYPAL_SOFT_DESCRIPTOR` | `null` | Text on the buyer's card statement, 22 characters at most. Empty sends none. |
@@ -38,7 +39,7 @@ Each method is its own checkout choice and its own gateway. See [Payment Methods
 | `methods.paypal.button` | | `[ 'layout' => 'vertical', 'color' => 'gold', 'shape' => 'rect', 'label' => 'paypal' ]` | The buttons' style, passed to PayPal's `Buttons( { style } )`. Only `layout`, `color`, `shape`, `label`, `height`, and `tagline` are passed. |
 | `methods.card.enabled` | | `false` | Offer card fields hosted by PayPal (gateway `paypal-card`). While it is on, the PayPal buttons hide their own card button. |
 | `methods.card.three_d_secure` | | `'SCA_WHEN_REQUIRED'` | `SCA_WHEN_REQUIRED` runs 3-D Secure when the issuer or regulation asks for it; `SCA_ALWAYS` runs it on every card payment. |
-| `methods.card.require_liability_shift` | | `true` | Refuse card, Apple Pay, and Google Pay payments whose 3-D Secure result is `NO` or `UNKNOWN`. See [Card Fields](Payment-Methods-Card-Fields). |
+| `methods.card.require_liability_shift` | | `true` | Refuse card, Apple Pay, and Google Pay payments whose 3-D Secure result is `NO` or `UNKNOWN`. With `SCA_ALWAYS`, a new card paid through card fields with no 3-D Secure result is refused too. See [Card Fields](Payment-Methods-Card-Fields#liability-shift). |
 | `methods.apple_pay.enabled` | | `false` | Offer Apple Pay (gateway `paypal-apple-pay`). |
 | `methods.apple_pay.domain_association` | `PAYPAL_APPLE_PAY_DOMAIN_ASSOCIATION` | `null` | Apple's domain association file: its contents, an absolute path to it, or an HTTPS URL. Empty uses `storage/app/ecommerce-paypal/apple-developer-merchantid-domain-association`. See [Apple Pay](Payment-Methods-Apple-Pay). |
 | `methods.apple_pay.serve_domain_association` | `PAYPAL_APPLE_PAY_SERVE_DOMAIN_ASSOCIATION` | `true` | Register the `/.well-known/apple-developer-merchantid-domain-association` route. Turn it off when your web server serves the file. |
@@ -56,9 +57,10 @@ Where PayPal's Pay Later messages may render. They also need the `paypal` method
 
 ## Vault
 
-| Key | Default | What it controls |
-| --- | --- | --- |
-| `vault.enabled` | `false` | Let signed-in shoppers save PayPal and cards, and show the saved payment methods account page. Needs the `paypal` or `card` method on. See [Saved Payment Methods](Vaulting). |
+| Key | Env | Default | What it controls |
+| --- | --- | --- | --- |
+| `vault.enabled` | | `false` | Let signed-in shoppers save PayPal and cards, and show the saved payment methods account page. Needs the `paypal` or `card` method on. See [Saved Payment Methods](Vaulting). |
+| `vault.prune_after_days` | `PAYPAL_VAULT_PRUNE_AFTER_DAYS` | `30` | How many days a removed saved method's row (its display data) is kept before the daily `ecommerce-paypal:prune-vault` command deletes it; `0` deletes them at the next run, and a value that isn't a number falls back to `30`. See [Saved Payment Methods](Vaulting#erasure). |
 
 ## HTTP
 
@@ -117,7 +119,7 @@ The package adds a **PayPal** group to the engine's settings registry (shown on 
 | `paypal.pay_later_messaging.product` | `pay_later_messaging.product` | boolean |
 | `paypal.vault.enabled` | `vault.enabled` | boolean |
 
-Config-only keys (no setting): `webhook_verification`, `methods.paypal.button`, `methods.card.three_d_secure`, `methods.card.require_liability_shift`, `methods.apple_pay.serve_domain_association`, `http.*`, and `logging.*`.
+Config-only keys (no setting): `webhook_verification`, `webhook_tolerance_seconds`, `methods.paypal.button`, `methods.card.three_d_secure`, `methods.card.require_liability_shift`, `methods.apple_pay.serve_domain_association`, `vault.prune_after_days`, `http.*`, and `logging.*`.
 
 **Secrets.** `client_secret` (`PAYPAL_CLIENT_SECRET`) and `webhook_id` (`PAYPAL_WEBHOOK_ID`) are registered as setting secrets: the screen shows whether each is configured, and never shows, returns, or stores the value. Set them in the environment.
 
@@ -129,6 +131,7 @@ Config-only keys (no setting): `webhook_verification`, `methods.paypal.button`, 
 | `paypal-live-credentials-invalid` | PayPal is enabled in `live` mode and PayPal refuses a live token for the credentials. The answer is cached for 10 minutes per credential fingerprint. When PayPal can't be reached, the save isn't blocked. |
 | `paypal-vault-unavailable` | Saved payment methods are on, but neither PayPal nor cards are. |
 | `paypal-apple-pay-domain-missing` | Apple Pay is on with no domain association value and no file in `storage/app/ecommerce-paypal/`. |
+| `paypal-apple-pay-domain-invalid` | The domain association value can't be used: contents that aren't Apple's hex, an `http://` URL, or a path that isn't a readable `apple-developer-merchantid-domain-association` file holding Apple's contents. While Apple Pay is on with the value empty, the file in `storage/app/ecommerce-paypal/` is checked the same way. See [Apple Pay](Payment-Methods-Apple-Pay#2-serve-it). |
 
 ## Per-method enablement
 
@@ -136,7 +139,8 @@ Every gateway in the family is registered while PayPal is enabled, even a method
 
 - its `methods.*.enabled` is on;
 - PayPal accepts the cart's currency for that method;
-- the cart total is above zero in PayPal's units.
+- the cart total is above zero in PayPal's units;
+- the cart total is a whole amount in PayPal's units (see [HUF and TWD](#huf-and-twd)).
 
 Device and buyer eligibility (Apple Pay on Apple devices, Google Pay readiness, Venmo and Pay Later by buyer country) is decided by PayPal's SDK in the browser; an ineligible method hides itself. See [Availability](Extending-Availability).
 
@@ -151,3 +155,7 @@ Device and buyer eligibility (Apple Pay on Apple devices, Google Pay readiness, 
 | `pay_later` (inside the buttons and messages) | AUD, EUR, GBP, USD |
 
 HUF, JPY, and TWD are sent to PayPal without decimals. Change any list with the `ap.ecommerce.paypal.supportedCurrencies` filter.
+
+### HUF and TWD
+
+The engine stores HUF and TWD in hundredths, but PayPal only takes whole forints and New Taiwan dollars. A cart whose total has a fraction (for example `1234.50 HUF`, which 27% VAT easily produces) isn't offered any PayPal method, because PayPal would charge a rounded amount the checkout could never finalize against. Refunds of a HUF or TWD amount with a fraction fail with `amount_not_representable`. Round your HUF and TWD prices, taxes, and shipping so totals come out whole if you sell in them. JPY is stored in whole yen, so it is unaffected.

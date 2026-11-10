@@ -43,7 +43,7 @@ Each event can take a few seconds to appear in PayPal's list. The suite polls fo
 
 ## In CI
 
-`.github/workflows/sandbox.yml` runs the suite nightly on `main`, on every push to a `release/**` branch, and on demand (**Run workflow**). Its jobs use the `paypal-sandbox` GitHub environment, which holds the secrets. Pull requests never get them.
+`.github/workflows/sandbox.yml` runs the suite nightly on `main`, on every push to a `release/**` branch, and on demand (**Run workflow**). Its jobs use the `paypal-sandbox` GitHub environment, where the secrets are set; until they are, every sandbox test is skipped. Pull requests never get them.
 
 ## Recorded signed deliveries
 

@@ -4,7 +4,7 @@ title: Artisan Commands
 
 # Artisan Commands
 
-The package registers four commands (in the console only).
+The package registers five commands (in the console only).
 
 | Command | Purpose |
 | --- | --- |
@@ -12,6 +12,7 @@ The package registers four commands (in the console only).
 | `ecommerce-paypal:verify-credentials` | Check the credentials, methods, currency, webhook, and Apple Pay domain file |
 | `ecommerce-paypal:webhooks:register` | Create or update the PayPal webhook and print its id |
 | `ecommerce-paypal:authorizations:reauthorize` | Reauthorize uncaptured authorizations and flag expiring ones (scheduled daily) |
+| `ecommerce-paypal:prune-vault` | Erase saved payment methods of deleted customers and prune removed ones (scheduled daily) |
 
 ## `ecommerce-paypal:install`
 
@@ -82,10 +83,23 @@ Checks every PayPal-paid order with an authorization on `orders.meta.paypal`:
 
 It prints the totals (`checked`, `reauthorized`, `expiring`, `failed`) and exits `1` when any reauthorization failed. It does nothing while PayPal is disabled. The package schedules it `daily()` with `withoutOverlapping()`; make sure the scheduler runs. See [Intent](Installation-Configuration#intent-capture-or-authorize).
 
+## `ecommerce-paypal:prune-vault`
+
+```bash
+php artisan ecommerce-paypal:prune-vault
+```
+
+Cleans up [saved payment methods](Vaulting#erasure):
+
+- erases the vault rows of customers the engine no longer has (the `ap.ecommerce.customer.deleted` hook was missed), and queues the deletion of their current-mode tokens at PayPal, as a customer deletion does;
+- deletes the rows of methods removed more than `vault.prune_after_days` days ago (default 30, `PAYPAL_VAULT_PRUNE_AFTER_DAYS`).
+
+It prints both counts. When the vault tables aren't installed, it does nothing. The package schedules it `daily()` with `withoutOverlapping()`; make sure the scheduler runs.
+
 ## Engine commands
 
 | Command | Use with PayPal |
 | --- | --- |
 | `ecommerce:reconcile-payments` | Polls PayPal for checkouts and pending orders that went quiet (a missed webhook). Scheduled by the engine. |
-| `ecommerce:satellite:uninstall` | Uninstalls the package; `--purge` deletes the current mode's vault tokens at PayPal and drops the tables. |
+| `ecommerce:satellite:uninstall` | Uninstalls the package; `--purge` deletes the current mode's vault tokens at PayPal and drops the tables, or stops without dropping anything when PayPal can't delete a token. |
 | `ecommerce:verify-satellite` | Runs the engine's contract checks against the four gateways (`composer ecommerce:verify-satellite` in this repo). |

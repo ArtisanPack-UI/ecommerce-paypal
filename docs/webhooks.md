@@ -27,17 +27,17 @@ Run a queue worker for the engine's webhook queue (`artisanpack.ecommerce.webhoo
 | `CHECKOUT.ORDER.APPROVED` | None (finalize runs from the browser) | None |
 | `PAYMENT.CAPTURE.COMPLETED` | `succeeded` | Settles a pending capture on a placed order (`paypal.capture_completed` timeline entry) |
 | `PAYMENT.CAPTURE.PENDING` | None | `paypal.capture_pending` timeline entry with the reason |
-| `PAYMENT.CAPTURE.DENIED`, `PAYMENT.CAPTURE.DECLINED` | `failed`, once PayPal confirms it | For a pending capture on a placed order: records the status, writes `paypal.capture_denied`, adds a staff note, fires `ap.ecommerce.paypal.captureDenied` |
+| `PAYMENT.CAPTURE.DENIED`, `PAYMENT.CAPTURE.DECLINED` | `failed`, once PayPal confirms it | For a pending capture on a placed order: records the status, writes `paypal.capture_denied`, adds a staff note, sets the order's payment status to `failed` (see [Denied pending captures](#denied-pending-captures)), and fires `ap.ecommerce.paypal.captureDenied` |
 | `PAYMENT.AUTHORIZATION.CREATED` | `succeeded` | None |
-| `PAYMENT.AUTHORIZATION.VOIDED` | `failed`, once PayPal confirms it | None |
-| `PAYMENT.CAPTURE.REFUNDED` | `refunded`, with the refund id | Records a refund made in PayPal on the order |
+| `PAYMENT.AUTHORIZATION.VOIDED` | `failed`, once PayPal confirms it | For the authorization of a placed order (authorize intent): records `VOIDED` on `orders.meta.paypal.authorization`, so the daily reauthorization skips it, writes `paypal.authorization_voided`, and adds a staff note. The order and payment statuses aren't changed |
+| `PAYMENT.CAPTURE.REFUNDED` | `refunded`, with the refund id | Records a refund made in PayPal on the order, and settles a refund the store issued but recorded as failed (`paypal.refund_settled`) |
 | `PAYMENT.CAPTURE.REVERSED` | `refunded` | Records the reversal as a refund and writes `paypal.capture_reversed` |
 | `CUSTOMER.DISPUTE.CREATED`, `.UPDATED`, `.RESOLVED` | None | Order note, timeline entry, summary on `orders.meta.paypal.disputes`, and the dispute hooks |
 | `VAULT.PAYMENT-TOKEN.CREATED`, `.DELETED` | None | Syncs saved payment methods. See [Saved Payment Methods](Vaulting#webhooks) |
 
 The session reference is the PayPal Order id: the resource id for `CHECKOUT.ORDER.*`, and `supplementary_data.related_ids.order_id` for payment events.
 
-**Trust nothing in the body.** PayPal signs a CRC of the body, not the body itself. A `succeeded` outcome only makes the engine run finalize, which loads the Order from PayPal before capturing. A `failed` outcome is only reported after the capture or authorization is fetched and PayPal confirms it. Every side effect re-fetches its resource (capture, refund, dispute, or token) from PayPal first.
+**Trust nothing in the body.** PayPal signs a CRC of the body, not the body itself. A `succeeded` outcome only makes the engine run finalize, which loads the Order from PayPal before capturing. A `failed` outcome is only reported after the capture or authorization is fetched and PayPal confirms it. Every side effect re-fetches its resource (capture, authorization, refund, dispute, or token) from PayPal first.
 
 ## Verification
 
@@ -47,8 +47,8 @@ Each delivery is verified before anything else. It is refused, with a distinct c
 | --- | --- |
 | `missing_headers` | A `PAYPAL-TRANSMISSION-ID`, `-TRANSMISSION-TIME`, `-TRANSMISSION-SIG`, `PAYPAL-CERT-URL`, or `PAYPAL-AUTH-ALGO` header is missing |
 | `unsupported_algorithm` | The algorithm isn't `SHA256withRSA` |
-| `stale_transmission` | The transmission time is unreadable or more than 5 minutes off |
-| `invalid_cert_url` | The certificate URL isn't HTTPS on PayPal's certificate host for the mode (`api.paypal.com` live, `api.sandbox.paypal.com` sandbox) |
+| `stale_transmission` | The transmission time is unreadable or further from now than `webhook_tolerance_seconds` (3 days by default; see [Transmission time](#transmission-time)) |
+| `invalid_cert_url` | The certificate URL isn't HTTPS on PayPal's certificate host for the mode (`api.paypal.com` live, `api.sandbox.paypal.com` sandbox), at a `/v1/notifications/certs/CERT-…` path |
 | `webhook_id_missing` | No webhook id is configured |
 | `invalid_payload` | The body isn't a PayPal event |
 | `certificate_unavailable` | The certificate couldn't be downloaded (PayPal redelivers) |
@@ -60,7 +60,7 @@ Each delivery is verified before anything else. It is refused, with a distinct c
 
 ### `local` (default)
 
-The certificate is fetched through the PayPal client (TLS-verified), checked, and cached until it expires. The signature over `transmission_id|transmission_time|webhook_id|crc32(body)` is checked with OpenSSL for each configured webhook id. No API call per event, and it keeps working while PayPal's API is degraded.
+The certificate is fetched through the PayPal client (TLS-verified), checked, and cached until it expires. A certificate that couldn't be downloaded or used is remembered for 10 minutes, so unsigned requests can't make the store download it again and again. The signature over `transmission_id|transmission_time|webhook_id|crc32(body)` is checked with OpenSSL for each configured webhook id. No API call per event, and it keeps working while PayPal's API is degraded.
 
 ### `postback`
 
@@ -68,20 +68,30 @@ The certificate is fetched through the PayPal client (TLS-verified), checked, an
 PAYPAL_WEBHOOK_VERIFICATION=postback
 ```
 
-Each delivery is sent to PayPal's `POST /v1/notifications/verify-webhook-signature` instead, so PayPal decides. It costs one API call per event, and deliveries are refused (and redelivered by PayPal) while that endpoint is unreachable.
+Each delivery is sent to PayPal's `POST /v1/notifications/verify-webhook-signature` instead, with the event exactly as it was received, so PayPal decides. With several webhook ids, each is tried in turn. It costs one API call per event, and deliveries are refused (and redelivered by PayPal) while that endpoint is unreachable.
 
 A failure logs its code and the transmission id (and PayPal's debug id when there is one), never the body.
+
+### Transmission time
+
+`webhook_tolerance_seconds` (`PAYPAL_WEBHOOK_TOLERANCE_SECONDS`) is how far a delivery's `PAYPAL-TRANSMISSION-TIME` may be from now. It defaults to `259200` (3 days), PayPal's redelivery horizon, so PayPal's own retries of a delivery your app missed aren't refused as stale. `0` turns the check off, and a non-numeric value falls back to the default. A long window doesn't let a replay act twice: the signature covers the transmission id and time, and the engine drops event ids it has already processed.
 
 ## Processing
 
 1. The engine verifies the delivery through the `paypal` gateway, dedupes it, and queues reconciliation for a payment outcome.
 2. For a new, verified delivery, the engine fires `ap.ecommerce.gateway.paypal.webhook_received`. The package then:
-   - queues `ProcessPayPalWebhook` for events with side effects. The job carries only the event id, type, and resource id, never the payer's personal data, and retries 5 times (after 30 s, 2 min, 10 min, and 30 min) while PayPal is unreachable;
+   - queues `ProcessPayPalWebhook` for events with side effects. The job carries only the event id, type, and resource id, never the payer's personal data, and retries for up to 24 hours while PayPal is unreachable (after 30 s, 2 min, 10 min, and 30 min, then hourly). A job that gives up is logged at `error` on the package's log channel (`logging.channel`) with the event id and type, the resource id, and PayPal's debug id, so you can find the event in PayPal and resend it;
    - fires `ap.ecommerce.paypal.webhookEvent` `(string $eventType, array $event, WebhookResult $result)` for every verified event, whether or not the package acts on it. A listener that throws is reported and doesn't fail the delivery.
+
+## Denied pending captures
+
+A `PENDING` capture (an eCheck or a review hold) places the order as paid. When PayPal later denies it, the package fails the order's payment through the engine's `PaymentOrchestrator::recordProviderPaymentFailure()` (engine 1.3): `payment_status` becomes `failed`, with a `payment.capture_failed` timeline entry (`source: provider`), the engine's `ap.ecommerce.payment.failed` hook, and its `PaymentFailed` event. The engine only does this while the order is `paid` and nothing has been refunded; otherwise reconciling it is up to staff. The order status, stock, and digital deliverables aren't changed; that's store policy, which you can apply from `ap.ecommerce.paypal.captureDenied`.
+
+Capture events are applied under the order's lock, so events processed out of order can't move a settled capture back to `PENDING`, and a settle that arrives before the capture was recorded isn't lost.
 
 ## Disputes and reversals
 
-Dispute events are matched to an order through the disputed capture ids; disputes about captures no order recorded are ignored. For a match, the package adds a translated system note with the reason, amount, respond-by date, and a Resolution Center link; writes a `paypal.dispute_created`, `_updated`, or `_resolved` timeline entry; keeps a summary on `orders.meta.paypal.disputes.{dispute id}`; and fires `ap.ecommerce.paypal.disputeCreated`, `disputeUpdated`, or `disputeResolved` `(Order $order, array $dispute)`.
+Dispute events are matched to an order through the disputed capture ids; disputes about captures no order recorded are ignored. For a match, the package adds a translated system note with the reason, amount, respond-by date, and a Resolution Center link; writes a `paypal.dispute_created`, `_updated`, or `_resolved` timeline entry; keeps a summary on `orders.meta.paypal.disputes.{dispute id}`; and fires `ap.ecommerce.paypal.disputeCreated`, `disputeUpdated`, or `disputeResolved` `(Order $order, array $dispute)` once those writes have committed. A listener that throws is reported, not rethrown, so a retry doesn't write the note and timeline entry again.
 
 Disputes don't change the order status. That's store policy: apply it from the hooks or a kanban automation.
 

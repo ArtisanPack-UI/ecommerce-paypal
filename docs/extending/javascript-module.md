@@ -227,7 +227,7 @@ onBeforeUnmount( () => {
 </template>
 ```
 
-Wrappers should match the Livewire drivers' accessibility: a labelled group, polite and assertive live regions for status and errors, and focus back to the payment step heading after a cancel. See [Accessibility](Accessibility).
+Wrappers should match the Livewire drivers' accessibility: a labeled group, polite and assertive live regions for status and errors, and focus back to the payment step heading after a cancel. See [Accessibility](Accessibility).
 
 ## Saved methods in React and Vue
 

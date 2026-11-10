@@ -43,7 +43,7 @@ class ApplePayDomainAssociationController
     {
         $contents = $association->contents();
 
-        abort_if( null === $contents, 404 );
+        abort_if( null === $contents, 404, '', [ 'X-Content-Type-Options' => 'nosniff' ] );
 
         return new Response( $contents, 200, [
             'Content-Type'           => 'text/plain; charset=UTF-8',

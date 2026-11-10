@@ -75,7 +75,7 @@ Sandbox and live credentials are separate. Check `PAYPAL_MODE` matches the app t
 Check the log for the refusal code, then [Webhooks](Webhooks#verification):
 
 - `webhook_id_missing` or `signature_mismatch`: `PAYPAL_WEBHOOK_ID` is empty or not the id of the webhook that delivered (a sandbox id in live mode, or an old id after re-registering). Run `ecommerce-paypal:webhooks:register` and update it.
-- `stale_transmission`: the server clock is off. Sync it with NTP.
+- `stale_transmission`: the delivery is older than `webhook_tolerance_seconds` (3 days by default), or the server clock is far off. Sync the clock with NTP, and check the setting wasn't lowered.
 - `invalid_cert_url`: a delivery for the other mode, or not from PayPal.
 - `use_paypal_endpoint`: the webhook points at a sibling gateway's URL. Point it at `ecommerce/webhooks/paypal`.
 
@@ -87,11 +87,11 @@ PayPal declined the funding source at capture. The checkout re-mounts the button
 
 ### "Your bank couldn't verify this card"
 
-The 3-D Secure result was `NO` or `UNKNOWN` and `methods.card.require_liability_shift` is on. The shopper can try another card. Turn the setting off to accept those payments at your own risk.
+The 3-D Secure result was `NO` or `UNKNOWN` (or, with `SCA_ALWAYS`, a new card in the card fields came back with no result) and `methods.card.require_liability_shift` is on. The shopper can try another card. Turn the setting off to accept those payments at your own risk.
 
 ### An order shows paid but the money hasn't arrived
 
-The capture is `PENDING` (an eCheck or a PayPal review). The order's timeline has a `paypal.capture_pending` entry with the reason, and `orders.meta.paypal.capture_status` and `pending_reason` hold it. `PAYMENT.CAPTURE.COMPLETED` or `DENIED` settles it; a denial adds a staff note and fires `ap.ecommerce.paypal.captureDenied`.
+The capture is `PENDING` (an eCheck or a PayPal review). The order's timeline has a `paypal.capture_pending` entry with the reason, and `orders.meta.paypal.capture_status` and `pending_reason` hold it. `PAYMENT.CAPTURE.COMPLETED` or `DENIED` settles it; a denial sets the payment status to `failed`, adds a staff note, and fires `ap.ecommerce.paypal.captureDenied`. See [Webhooks](Webhooks#denied-pending-captures).
 
 ### A dashboard refund isn't on the order
 

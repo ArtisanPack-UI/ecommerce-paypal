@@ -97,7 +97,7 @@ it( 'remembers a failed fetch for a minute instead of calling the URL on every r
 it( 'answers 404 when nothing usable is configured', function ( Closure $arrange ): void {
     $arrange( $this );
 
-    $this->get( ApplePayDomainAssociation::PATH )->assertNotFound();
+    $this->get( ApplePayDomainAssociation::PATH )->assertNotFound()->assertHeader( 'X-Content-Type-Options', 'nosniff' );
 } )->with( [
     'nothing'             => fn () => fn () => appleDomainAssociation( null ),
     'another file'        => fn () => function ( $test ): void {

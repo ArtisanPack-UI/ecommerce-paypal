@@ -15,6 +15,7 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\EcommercePayPal\Console\Commands;
 
+use ArtisanPackUI\Ecommerce\Ecommerce;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\File;
 
@@ -38,6 +39,15 @@ class InstallCommand extends Command
      * @var string
      */
     public const CONFIG_FILE = 'artisanpack/ecommerce-paypal.php';
+
+    /**
+     * Where the migrations are published, relative to the app's base path.
+     *
+     * @since 1.0.0
+     *
+     * @var string
+     */
+    public const MIGRATIONS_PATH = 'database/migrations/ecommerce-paypal';
 
     /**
      * The Tailwind `@source` lines for the driver views.
@@ -170,7 +180,18 @@ class InstallCommand extends Command
 
         $status = $this->call( 'vendor:publish', [ '--tag' => 'ecommerce-paypal-migrations' ] );
 
-        return self::SUCCESS === $status ? $this->call( 'migrate', [ '--force' => true ] ) : $status;
+        if ( self::SUCCESS !== $status ) {
+            return $status;
+        }
+
+        // A host that called Ecommerce::ignoreMigrations() doesn't load the
+        // package's own copies, and `migrate` doesn't look in subfolders:
+        // point it at the published ones.
+        $options = Ecommerce::shouldRunMigrations()
+            ? [ '--force' => true ]
+            : [ '--force' => true, '--path' => [ self::MIGRATIONS_PATH ] ];
+
+        return $this->call( 'migrate', $options );
     }
 
     /**

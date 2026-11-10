@@ -132,7 +132,11 @@ addAction( 'ap.ecommerce.paypal.captured', function ( Order $order, string $capt
 
 Fires when PayPal denies a capture that was pending on a placed order
 (`PAYMENT.CAPTURE.DENIED`/`DECLINED`), after the order note and timeline
-entry are written.
+entry are written and the order's payment status is set to `failed`
+(see [Webhooks](Webhooks#denied-pending-captures)). It fires once those
+writes have committed. A listener that throws is reported, not rethrown,
+so the webhook job doesn't retry and write the note and timeline entry
+again.
 
 | # | Parameter | Type | Description |
 |---|---|---|---|
@@ -154,8 +158,10 @@ authorization is within 2 days of expiring.
 ### `ap.ecommerce.paypal.disputeCreated` / `disputeUpdated` / `disputeResolved`
 
 Fire for `CUSTOMER.DISPUTE.CREATED`, `.UPDATED`, and `.RESOLVED`, after the
-order note and timeline entry are written. Disputes never
-change the order status, so these hooks are where store policy goes.
+order note and timeline entry are written and committed. A listener that
+throws is reported, not rethrown, so the webhook job doesn't retry and
+write them again. Disputes never change the order status, so these hooks
+are where store policy goes.
 
 | # | Parameter | Type | Description |
 |---|---|---|---|

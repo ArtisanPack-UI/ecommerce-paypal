@@ -27,7 +27,7 @@ Download the file from the PayPal developer dashboard (open your app, then the *
 
 ## 2. Serve it
 
-The package serves the file at `/.well-known/apple-developer-merchantid-domain-association` (route `artisanpack.ecommerce-paypal.apple-pay.domain-association`), with no session or cookies, as `text/plain`, cached for an hour. Tell it where the file is with `methods.apple_pay.domain_association` (`PAYPAL_APPLE_PAY_DOMAIN_ASSOCIATION`, also a store setting). It takes one of:
+The package serves the file at `/.well-known/apple-developer-merchantid-domain-association` (route `artisanpack.ecommerce-paypal.apple-pay.domain-association`), with no session or cookies, as `text/plain` with `X-Content-Type-Options: nosniff`, cached for an hour. Tell it where the file is with `methods.apple_pay.domain_association` (`PAYPAL_APPLE_PAY_DOMAIN_ASSOCIATION`, also a store setting). It takes one of:
 
 | Value | Example | Notes |
 | --- | --- | --- |
@@ -36,7 +36,9 @@ The package serves the file at `/.well-known/apple-developer-merchantid-domain-a
 | An absolute path | `/var/www/shared/apple-developer-merchantid-domain-association` | The file must be named `apple-developer-merchantid-domain-association`, so the setting can't expose any other file. |
 | An HTTPS URL | `https://cdn.example.com/apple-developer-merchantid-domain-association` | Fetched without following redirects and cached for an hour; a failed fetch is retried after a minute. `http://` URLs are refused. |
 
-A file or URL is only served when its contents look like Apple's file (only hex characters and whitespace, with a run of at least 32 hex characters). Otherwise, or when nothing is configured, the route returns `404`.
+Whatever the source, pasted contents included, the route only serves contents that look like Apple's file (only hex characters and whitespace, with a run of at least 32 hex characters). Otherwise, or when nothing is configured, it returns `404`.
+
+The settings screen refuses a value it couldn't serve (`paypal-apple-pay-domain-invalid`): contents that aren't Apple's hex, an `http://` URL, or a path that doesn't exist, can't be read, isn't named `apple-developer-merchantid-domain-association`, or doesn't hold Apple's contents. While Apple Pay is on with the value empty, the file in `storage/app/ecommerce-paypal/` must hold Apple's contents too. An HTTPS URL is only checked when the route fetches it, so check the route with the `curl` command in step 3 after setting one.
 
 **Serving it yourself.** If your web server or CDN already serves `/.well-known/…`, set `methods.apple_pay.serve_domain_association` (`PAYPAL_APPLE_PAY_SERVE_DOMAIN_ASSOCIATION`) to `false`, and the package doesn't register the route. This key is read at boot, so it is config-only.
 
@@ -67,7 +69,7 @@ The settings screen refuses to enable Apple Pay without a domain association val
 ## In the checkout
 
 - The driver checks `ApplePaySession.canMakePayments()` and PayPal's `Applepay().config()`. When either says no, it hides the button and tells the checkout.
-- The Apple Pay sheet shows the total labelled with `brand_name` (or the app name), in the cart's currency, and asks for the billing postal address.
+- The Apple Pay sheet shows the total labeled with `brand_name` (or the app name), in the cart's currency, and asks for the billing postal address.
 - Apple Pay payments carry a 3-D Secure liability shift, so `methods.card.require_liability_shift` applies to them. See [Card Fields](Payment-Methods-Card-Fields#liability-shift).
 - Canceling the sheet keeps the shopper on the payment step and returns focus to the step heading.
 

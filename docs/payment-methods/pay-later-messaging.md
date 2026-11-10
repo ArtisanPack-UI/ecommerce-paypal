@@ -37,6 +37,7 @@ Otherwise nothing renders. Whether the buyer is eligible is PayPal's call: it re
 | `amount` | `Money\Money`, or an integer (or digit string) in minor units | `null` (renders nothing) | The amount the message describes |
 | `placement` | `product`, `cart`, `payment`, `checkout` | `product` | Which `pay_later_messaging` key gates it, and the placement passed to PayPal |
 | `currency` | ISO code | The store's base currency | Only used with a minor-units amount |
+| `nonce` | string | `Vite::cspNonce()` | The Content-Security-Policy nonce for the component's inline script. See [Security and CSP](Advanced-Security-Csp#nonces) |
 
 Extra attributes (for example `class`) go on the wrapper. The wrapper reserves one line's height (`min-h-6`), so nothing moves while PayPal loads. PayPal's own accessible markup is kept.
 

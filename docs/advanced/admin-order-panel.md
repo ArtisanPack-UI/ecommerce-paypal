@@ -26,6 +26,8 @@ With `artisanpack-ui/ecommerce-admin-livewire` installed, the package adds a **P
 | Liability shift | The 3-D Secure result: Possible (3-D Secure passed), Yes, No, or Unknown |
 | Disputes | Each dispute's reason, status, outcome, respond-by date, and a Resolution Center link |
 
+Statuses, dispute reasons, and outcomes are shown as translated labels ("Under review", not `UNDER_REVIEW`); dispute outcomes use the same wording as the dispute's order note. A value the package doesn't know is shown in readable form, and the raw PayPal value stays in the row's `data-*` attribute.
+
 Everything comes from `orders.meta.paypal`, so the panel never calls PayPal and loads instantly. For an order not paid with PayPal it renders nothing. It re-renders when another panel changes the order (the `ecommerce-admin-order-updated` event, after a refund or capture).
 
 Links open PayPal in a new tab and say so to screen readers. Each link goes to the dashboard for the mode the order was paid in, even after the store has switched modes.

@@ -28,7 +28,7 @@ Both commands build the workbench stylesheet first (`npm run build:browser`). `c
 
 `CheckoutJourneysTest` covers the following:
 
-- **Buttons:** they render from the real SDK; cancelling in PayPal returns to the payment step with a message; a sandbox buyer approves and the order completes.
+- **Buttons:** they render from the real SDK; canceling in PayPal returns to the payment step with a message; a sandbox buyer approves and the order completes.
 - **Card fields:** validation errors; a frictionless 3-D Secure card; a challenge card; a card whose liability shift fails, including where focus goes afterwards.
 - **Saved cards:** a card saved at checkout, used at the next checkout, then removed from the account page (and at PayPal).
 

@@ -8,21 +8,38 @@ title: Testing Your Application
 
 ## Set up
 
+The gateways are registered while the app boots, so PayPal must be enabled, with credentials, before your test's app starts. Setting the config in `beforeEach()` is too late: the gateways aren't registered. Set the environment in `phpunit.xml`:
+
+```xml
+<php>
+    <env name="PAYPAL_ENABLED" value="true"/>
+    <env name="PAYPAL_CLIENT_ID" value="test-client"/>
+    <env name="PAYPAL_CLIENT_SECRET" value="test-secret"/>
+</php>
+```
+
+or, in a package tested with Orchestra Testbench, in your test case's `defineEnvironment()`:
+
+```php
+protected function defineEnvironment( $app ): void
+{
+    $app['config']->set( 'artisanpack.ecommerce-paypal.enabled', true );
+    $app['config']->set( 'artisanpack.ecommerce-paypal.client_id', 'test-client' );
+    $app['config']->set( 'artisanpack.ecommerce-paypal.client_secret', 'test-secret' );
+}
+```
+
+Then fake PayPal in each test:
+
 ```php
 use ArtisanPackUI\EcommercePayPal\Testing\PayPalFake;
 
 beforeEach( function (): void {
-    config( [
-        'artisanpack.ecommerce-paypal.enabled'       => true,
-        'artisanpack.ecommerce-paypal.client_id'     => 'test-client',
-        'artisanpack.ecommerce-paypal.client_secret' => 'test-secret',
-    ] );
-
     $this->paypal = PayPalFake::fake();
 } );
 ```
 
-The gateways register at boot, so set the config in your test environment (`phpunit.xml` env vars or your test case's environment setup) when you need them registered.
+Most other keys (the methods, intent, and vault switches) are read when they're used, so `config( [ … ] )` in a test changes them. `methods.apple_pay.serve_domain_association` is also read at boot.
 
 Every endpoint the package calls answers with a recorded fixture (shapes from PayPal's OpenAPI examples) until you queue something else. Requests to other hosts aren't intercepted; an unknown PayPal path gets a `404`.
 

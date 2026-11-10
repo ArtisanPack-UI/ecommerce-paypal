@@ -62,7 +62,7 @@ It registers four gateways with the engine, verifies PayPal's webhooks, and stor
 - **Verified webhooks**: Signatures are checked locally against PayPal's certificate (or by PayPal, in `postback` mode). Pending captures, dashboard refunds, reversals, disputes, and vault changes are recorded on the order.
 - **Saved payment methods**: Signed-in shoppers can save PayPal and cards. Only PayPal's token ids and display data are stored. Shoppers manage them on an account page or through REST endpoints.
 - **Storefront UI**: Livewire drivers for storefront-livewire, a Pay Later message component, and a framework-agnostic JS module (`paypal-checkout.js`) for React and Vue storefronts.
-- **Operations**: Setup commands for credentials, webhooks, and the Apple Pay domain file; an admin order panel; PayPal debug ids in every error log, with credentials and personal data redacted.
+- **Operations**: Setup commands that register the webhook and check the credentials, webhook, and Apple Pay domain file; a daily cleanup of saved payment methods; an admin order panel; PayPal debug ids in every error log, with credentials and personal data redacted.
 - **Extension points**: Filters for the Order payload, client options, and currencies, and actions for captures, denials, expiring authorizations, disputes, and every webhook event.
 - **Accessible and translated**: Targets WCAG 2.2 AA. Ships English, Spanish, French, and German, and loads PayPal's SDK in the matching locale.
 

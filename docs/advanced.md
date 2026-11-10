@@ -8,7 +8,7 @@ Commands, operations, security, testing, and contributor tooling.
 
 ## In this section
 
-- [Artisan Commands](Advanced-Artisan-Commands) - `install`, `verify-credentials`, `webhooks:register`, and `authorizations:reauthorize`
+- [Artisan Commands](Advanced-Artisan-Commands) - `install`, `verify-credentials`, `webhooks:register`, `authorizations:reauthorize`, and `prune-vault`
 - [Security and CSP](Advanced-Security-Csp) - PCI scope, Content-Security-Policy sources, and what is redacted
 - [Troubleshooting](Advanced-Troubleshooting) - PayPal debug ids, logging, and common problems
 - [Admin Order Panel](Advanced-Admin-Order-Panel) - The PayPal side panel on admin-livewire's order screen
@@ -33,13 +33,18 @@ The client reads config on every call, so a settings change (mode, client id) ap
 
 | Operation | `PayPal-Request-Id` |
 | --- | --- |
-| Create Order | The checkout's idempotency key, or an id kept on `cart.meta.paypal` |
+| Create Order | `session-{cart id}-{hash}` when the checkout sends an idempotency key: a hash of the gateway key and the checkout's key, so it is unique per cart and gateway and at most 108 characters. Without a key, a UUID kept on `cart.meta.paypal.request_id`, reused only until it creates an Order |
+| Update the shipping address | `patch-{order id}-{hash of the address}` |
 | Capture Order | `capture-{order id}` (`capture-{order id}-{n}` after an `INSTRUMENT_DECLINED`) |
-| Authorize Order | `authorize-{order id}` |
+| Authorize Order | `authorize-{order id}` (`authorize-{order id}-{n}` after an `INSTRUMENT_DECLINED`) |
 | Capture authorization | `capture-{authorization id}` |
 | Void authorization | `void-{authorization id}` |
 | Reauthorize | `reauthorize-{authorization id}` |
-| Refund | The engine's refund idempotency key |
+| Refund | The engine's refund idempotency key, or `refund-{capture id}-{n}-{amount}` without one |
+| Refund a capture without a liability shift | `liability-refund-{capture id}` |
+| Delete a vault token | `vault-delete-{token id}` |
+
+The Order's `invoice_id` is derived from its request id, so a retried create always sends the same body.
 
 ## Order meta
 

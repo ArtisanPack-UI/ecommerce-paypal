@@ -48,7 +48,7 @@ The package follows [Semantic Versioning](https://semver.org/). Breaking changes
 
 ## Engine upgrades
 
-The package depends on the engine's `PaymentGateway`, `RendersClientPayment`, and `SharesWebhookEndpoint` contracts. Upgrade the engine within its supported range (`^1.3`) and run `ecommerce:verify-satellite` if you build on the gateways yourself.
+The package depends on the engine's `PaymentGateway` and `RendersClientPayment` contracts, and on what engine 1.3 added: the `SharesWebhookEndpoint` and `AcceptsPaymentOptions` contracts, `RefundService::recordProviderRefund()`, and `PaymentOrchestrator::recordProviderPaymentFailure()`. Upgrade the engine within its supported range (`^1.3`) and run `ecommerce:verify-satellite` if you build on the gateways yourself.
 
 ## Switching from sandbox to live
 

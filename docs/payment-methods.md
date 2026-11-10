@@ -32,6 +32,8 @@ All four support full and partial refunds. Only the `paypal` gateway receives we
 3. **Confirm.** The driver checks the approved Order belongs to the session and reports it to the checkout. With `require_liability_shift` on, a card or wallet payment without a liability shift is refused here.
 4. **Finalize.** The engine retrieves the session, runs its fraud check, and calls `capturePayment()`. The gateway captures (or authorizes and captures; see [Intent](Installation-Configuration#intent-capture-or-authorize)) with an idempotent `PayPal-Request-Id`, and stores the capture id, authorization, and payer details on `orders.meta.paypal`.
 
+Before capturing, the gateway checks the PayPal Order against the checkout. An Order whose `custom_id` names another cart fails with `paypal_order_mismatch`, and one paid with a source the gateway doesn't take (a card on the `paypal` gateway while card fields are on, a wallet on `paypal-card`) fails with `payment_source_mismatch`, so a switched-off method can't be paid through a sibling. If the shopper changed the shipping address after the Order was created, PayPal and Venmo Orders get the new address (`PATCH /v2/checkout/orders/{id}`) before capture, so the transaction keeps PayPal Seller Protection; a PATCH PayPal refuses is logged with a `paypal.shipping_patch_failed` timeline entry, and the capture still goes ahead.
+
 A `PENDING` capture (an eCheck or a review hold) places the order as paid and is settled later by webhook. A decline returns a failed result with a translated message; nothing throws.
 
 ### Session statuses
@@ -48,11 +50,13 @@ A `PENDING` capture (an eCheck or a review hold) places the order as paid and is
 
 ### Money
 
-Amounts are sent as PayPal's decimal strings. HUF, JPY, and TWD are sent without decimals. When that rounding makes the line items and breakdown differ from the engine total, the difference goes into `discount` or `handling`, so PayPal's breakdown check passes and `amount.value` always equals the engine's total.
+Amounts are sent as PayPal's decimal strings. HUF, JPY, and TWD are sent without decimals. When that rounding makes the line items and breakdown differ from the engine total, the difference goes into `discount` or `handling`, so PayPal's breakdown check passes.
+
+The total itself is never rounded. The engine keeps HUF and TWD in hundredths, but PayPal only takes whole forints and dollars, so a cart whose HUF or TWD total has a fraction isn't offered any PayPal method, and `createPaymentSession()` throws for one ("PayPal only accepts whole :currency amounts."). For every cart PayPal is offered, `amount.value` equals the engine's total. JPY is stored in whole yen, so it is unaffected.
 
 ### Refunds
 
-`refund()` refunds the order's capture (`POST /v2/payments/captures/{id}/refund`) with the engine's idempotency key as `PayPal-Request-Id`, `invoice_id` set to `refund-{refund id}`, `custom_id` set to the engine refund id (so the webhook matches it back), and the reason as `note_to_payer` (up to 255 characters). PayPal's declines (`CAPTURE_FULLY_REFUNDED`, `REFUND_AMOUNT_EXCEEDED`, `REFUND_TIME_LIMIT_EXCEEDED`, and others) return a failed result with a translated message. A `PENDING` refund succeeds and the `PAYMENT.CAPTURE.REFUNDED` webhook settles it. Refunds made in the PayPal dashboard are recorded on the order from the webhook.
+`refund()` refunds the order's capture (`POST /v2/payments/captures/{id}/refund`) with the engine's idempotency key as `PayPal-Request-Id`, `invoice_id` set to `refund-{refund id}`, `custom_id` set to the engine refund id (so the webhook matches it back), and the reason as `note_to_payer` (up to 255 characters). PayPal shows `note_to_payer` to the buyer, so the engine's reason codes are mapped first: `fraudulent` and `duplicate` send no note, `requested_by_customer` sends "Refund requested by the customer.", and any other text is sent as is. A HUF or TWD amount with a fraction fails with `amount_not_representable` before PayPal is called. PayPal's declines (`CAPTURE_FULLY_REFUNDED`, `REFUND_AMOUNT_EXCEEDED`, `REFUND_TIME_LIMIT_EXCEEDED`, and others) return a failed result with a translated message. A `PENDING` refund succeeds and the `PAYMENT.CAPTURE.REFUNDED` webhook settles it. Refunds made in the PayPal dashboard are recorded on the order from the webhook.
 
 ## Without storefront-livewire
 

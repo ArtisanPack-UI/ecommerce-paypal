@@ -6,7 +6,9 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-The first stable release (1.0.0) of the PayPal gateway for the ArtisanPack UI
+## [1.0.0] - 2026-11-10
+
+The first release of the PayPal gateway for the ArtisanPack UI
 ecommerce engine. It runs on engine 1.3, PHP 8.3, and Laravel 12 or 13, and is
 licensed under MIT.
 
@@ -38,6 +40,9 @@ licensed under MIT.
   - erasure when the engine deletes a customer.
 - **Admin order panel** for `ecommerce-admin-livewire`: mode, PayPal Order, capture, and authorization ids with dashboard links, payer, funding source, liability shift, authorization expiry, and disputes, behind `order.view`.
 - **Setup commands:** `ecommerce-paypal:install`, `ecommerce-paypal:verify-credentials`, and `ecommerce-paypal:webhooks:register`.
+- **Vault housekeeping:** `ecommerce-paypal:prune-vault`, scheduled daily, erases saved payment methods whose engine customer no longer exists (deleting them at PayPal) and prunes removed methods after `vault.prune_after_days` (`PAYPAL_VAULT_PRUNE_AFTER_DAYS`, default 30). Erasure deletes each token at PayPal separately, retries only the ones PayPal may still accept, and logs what it couldn't delete; `--purge` stops before dropping the tables when a deletion failed.
+- **Currencies PayPal takes in whole units (HUF, TWD):** PayPal isn't offered for a total that isn't a whole unit, and a fractional refund is refused before PayPal is called.
+- **Webhook resilience:** `webhook_tolerance_seconds` (`PAYPAL_WEBHOOK_TOLERANCE_SECONDS`, default 3 days, `0` turns the check off) so PayPal's own retries verify; the processing job retries for 24 hours and logs a final failure; capture status moves only forward under the order's lock; a denied pending capture marks the order's payment failed through the engine; a refund the store recorded as failed is settled when PayPal completes it; and `PAYMENT.AUTHORIZATION.VOIDED` is recorded.
 - **Hooks:** `ap.ecommerce.paypal.orderPayload`, `.clientOptions`, and `.supportedCurrencies` filters; `ap.ecommerce.paypal.captured`, `.captureDenied`, `.authorizationExpiring`, `.disputeCreated`, `.disputeUpdated`, `.disputeResolved`, and `.webhookEvent` actions.
 - **Return and cancel URLs:** PayPal Orders send the shopper back to the storefront's checkout return route whether they approve or cancel (`cancel_url` defaults to `return_url`), so a cancel on PayPal's full-page flow lands on the payment step with "Your payment wasn't completed" instead of the start of checkout.
 - **Content-Security-Policy:** `ecommerce-paypal:install` prints PayPal's JS SDK v5 sources (`*.paypal.com`, `*.paypalobjects.com`, `*.venmo.com` on `script-src`, `style-src`, `connect-src`, `frame-src`, `child-src`, and `img-src`, plus the Apple Pay and Google Pay hosts). `paypal-checkout.js` gives the scripts it adds the page's CSP nonce (or the `csp_nonce` client option), as `nonce` and PayPal's `data-csp-nonce`, so a nonce-based policy works.

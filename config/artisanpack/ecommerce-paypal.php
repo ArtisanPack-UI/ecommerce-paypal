@@ -199,7 +199,7 @@ return [
 
     'vault' => [
         'enabled'          => false,
-        'prune_after_days' => (int) env( 'PAYPAL_VAULT_PRUNE_AFTER_DAYS', 30 ),
+        'prune_after_days' => env( 'PAYPAL_VAULT_PRUNE_AFTER_DAYS', 30 ),
     ],
 
     /*

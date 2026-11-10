@@ -186,6 +186,22 @@ class PayPalPaymentToken extends Model
     }
 
     /**
+     * Days a removed token is kept before it is pruned: the configured
+     * `vault.prune_after_days`, or 30 when it isn't a number, so a typo in
+     * the env value can't prune every removed method at once.
+     *
+     * @since 1.0.0
+     *
+     * @return int
+     */
+    public static function pruneAfterDays(): int
+    {
+        $configured = config( 'artisanpack.ecommerce-paypal.vault.prune_after_days', 30 );
+
+        return is_numeric( $configured ) ? max( 0, (int) $configured ) : 30;
+    }
+
+    /**
      * The tokens to prune: removed more than `vault.prune_after_days` ago.
      *
      * @since 1.0.0
@@ -194,7 +210,7 @@ class PayPalPaymentToken extends Model
      */
     public function prunable(): Builder
     {
-        $days = max( 0, (int) config( 'artisanpack.ecommerce-paypal.vault.prune_after_days', 30 ) );
+        $days = self::pruneAfterDays();
 
         return static::onlyTrashed()->where( $this->getDeletedAtColumn(), '<', now()->subDays( $days ) );
     }

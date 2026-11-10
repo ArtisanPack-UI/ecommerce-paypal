@@ -46,6 +46,10 @@ The value is sent as `payment_source.card.attributes.verification.method`.
 
 PayPal reports the 3-D Secure result as `liability_shift`: `POSSIBLE`, `YES`, `NO`, or `UNKNOWN`. With `require_liability_shift` on (the default), a `NO` or `UNKNOWN` result is refused before the order is placed or anything is captured, and the shopper sees "Your bank couldn't verify this card. Try another card or payment method." The same policy applies to Apple Pay and Google Pay, which also report a liability shift. PayPal-wallet payments are never refused by it.
 
+With `three_d_secure` set to `SCA_ALWAYS`, a card with no 3-D Secure result at all is refused too, since it skipped the authentication you asked for. That only applies to cards paid through the card fields while they are on (`methods.card.enabled`). Saved cards are exempt, because a shopper paying with a saved card runs no 3-D Secure, and so are Apple Pay, Google Pay, and PayPal's own guest-card button (shown in the PayPal buttons only while card fields are off), which are never asked for it.
+
+The policy also covers an Order that was already captured before finalize (in the browser, say): its session isn't reported as `succeeded`, and at finalize a refused capture is refunded in full, a `paypal.liability_shift_refunded` timeline entry is written (`paypal.liability_shift_refund_failed` if PayPal refuses the refund), and the payment fails.
+
 Turn it off to accept those payments anyway; the chargeback liability then stays with you. The admin [order panel](Advanced-Admin-Order-Panel) shows the result for each order.
 
 ## In the checkout
@@ -59,7 +63,7 @@ Turn it off to accept those payments anyway; the chargeback liability then stays
 
 A signed-in shopper's saved cards for the current mode are listed above the fields as radio options (the default first, and selected to start with), with "Use a new card". Choosing a saved card hides the fields; "Pay with this card" replaces the PayPal Order with one paying by `vault_id` with `stored_credential` (`payment_initiator: CUSTOMER`, `usage: SUBSEQUENT`), and reports it to the checkout.
 
-When the bank asks for 3-D Secure on a saved card, the shopper is sent to PayPal's verification page and returns to the checkout's return route. A card PayPal reports invalid is removed and the shopper asked to choose again. See [Saved Payment Methods](Vaulting).
+When the bank asks for 3-D Secure on a saved card, the shopper is sent to PayPal's verification page and returns to the checkout's return route. A card PayPal no longer holds is removed and the shopper asked to choose again. A card PayPal still holds but declined is kept, and the shopper is told "This card was declined. Choose another payment method." See [Saved Payment Methods](Vaulting).
 
 ## Styling
 

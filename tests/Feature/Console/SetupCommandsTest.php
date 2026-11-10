@@ -2,6 +2,7 @@
 
 declare( strict_types=1 );
 
+use ArtisanPackUI\Ecommerce\Ecommerce;
 use ArtisanPackUI\EcommercePayPal\Console\Commands\InstallCommand;
 use ArtisanPackUI\EcommercePayPal\Testing\PayPalFake;
 use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalWebhookEvents;
@@ -114,6 +115,30 @@ describe( 'install', function (): void {
             ->doesntExpectOutputToContain( 'Next steps:' )
             ->assertFailed();
     } );
+
+    it( 'points migrate at the published migrations when the host ignores package migrations', function ( bool $ignored ): void {
+        $paths = null;
+        Artisan::command( 'migrate {--force} {--path=*}', function () use ( &$paths ): int {
+            $paths = $this->option( 'path' );
+
+            return 0;
+        } );
+
+        try {
+            if ( $ignored ) {
+                Ecommerce::ignoreMigrations();
+            }
+
+            $this->artisan( 'ecommerce-paypal:install', [ '--migrate' => true, '--no-interaction' => true ] )->assertSuccessful();
+        } finally {
+            Ecommerce::$runsMigrations = true;
+        }
+
+        expect( $paths )->toBe( $ignored ? [ InstallCommand::MIGRATIONS_PATH ] : [] );
+    } )->with( [
+        'ignored'     => [ true ],
+        'not ignored' => [ false ],
+    ] );
 
     it( 'publishes and runs the migrations on request', function (): void {
         $this->artisan( 'ecommerce-paypal:install', [ '--migrate' => true, '--no-interaction' => true ] )

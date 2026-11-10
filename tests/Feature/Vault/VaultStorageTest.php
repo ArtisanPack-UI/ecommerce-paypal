@@ -463,6 +463,17 @@ describe( 'orphans and pruning', function (): void {
         Queue::assertNothingPushed();
     } );
 
+    it( 'keeps the 30-day window when the configured one isn\'t a number', function ( mixed $configured, int $days ): void {
+        config( [ 'artisanpack.ecommerce-paypal.vault.prune_after_days' => $configured ] );
+
+        expect( PayPalPaymentToken::pruneAfterDays() )->toBe( $days );
+    } )->with( [
+        'a typo'   => [ 'abc', 30 ],
+        'empty'    => [ '', 30 ],
+        'a string' => [ '7', 7 ],
+        'negative' => [ -5, 0 ],
+    ] );
+
     it( 'prunes removed tokens once the retention window has passed', function (): void {
         config( [ 'artisanpack.ecommerce-paypal.vault.prune_after_days' => 30 ] );
 

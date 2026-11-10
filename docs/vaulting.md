@@ -23,6 +23,12 @@ Or switch on **Saved payment methods** in the store settings. It needs the `payp
 | `ecommerce_paypal_customers` | `customer_id` (the engine customer, unique), `paypal_customer_id`, `mode` |
 | `ecommerce_paypal_payment_tokens` | `customer_id`, `paypal_token_id` (unique per mode), `gateway_key`, `type` (`paypal`, `card`, `venmo`), `display` (JSON: brand, last digits, expiry, email), `is_default`, `mode`, `last_used_at`, timestamps, soft deletes |
 
+The tables come from the package's migrations, which load automatically unless the host called the engine's `Ecommerce::ignoreMigrations()`. In that case publish them (`php artisan vendor:publish --tag=ecommerce-paypal-migrations`) and run them from where they are published, or let `php artisan ecommerce-paypal:install --migrate` do both:
+
+```bash
+php artisan migrate --path=database/migrations/ecommerce-paypal
+```
+
 No card number, CVV, or track data is ever stored. Each customer has at most one default method per mode, whatever UI or API made the change. Sandbox and live methods are kept apart by `mode`.
 
 ## Saving during checkout
@@ -56,7 +62,7 @@ Idempotency-Key: 0b6e…
 ```
 
 - **Who can send them.** Options apply only while vaulting is on and the cart belongs to the signed-in shopper. A guest, a signed-out shopper, the Apple Pay and Google Pay gateways, an unknown key, or a saved card on the `paypal` gateway all get `422` `payment-options-invalid`, and no PayPal Order is created.
-- **Saved cards.** A card that isn't the shopper's (or is from the other mode, or is a PayPal account) is `422` `saved-payment-method-unavailable`. A card PayPal no longer accepts is removed and answered with `422` `saved-payment-method-invalid`. In both cases, ask the shopper to choose another card or enter a new one.
+- **Saved cards.** A card that isn't the shopper's (or is from the other mode, or is a PayPal account) is `422` `saved-payment-method-unavailable`. A card PayPal no longer holds is removed and answered with `422` `saved-payment-method-invalid`. A card PayPal still holds but declined is kept and answered with `422` `saved-payment-method-unavailable` ("This card was declined."). In each case, ask the shopper to choose another card or enter a new one.
 - **Changing the choice.** Send the options again whenever the shopper changes them. The cart's PayPal Order is kept while the options match what it was created with, and replaced when they don't (ticking or unticking "save", or picking another saved card). Leave `payment_options` out, or send `null`, to keep the current Order's choices. Send `{}` to go back to a new card without saving.
 
 A saved-card Order is often charged when it is created, so after the session call go straight to `POST checkout/{cart}/finalize` with the session's `reference`. Only show PayPal's 3-D Secure step when the session says it needs the shopper (`requires_action`). See [JavaScript Module](Extending-Javascript-Module#saved-methods-in-react-and-vue) for a React example.
@@ -73,7 +79,7 @@ With storefront-livewire installed and its routes on, the package adds a **Saved
 | Livewire component | `artisanpack-ecommerce-paypal-saved-methods` |
 | Account menu key | `paypal-payment-methods` (position 35, icon `o-credit-card`, shown only while `vault.enabled` is on) |
 
-It lists the shopper's methods for the current mode (the default first, then the most recently used), marks expired cards, sets the default, and removes a method after a confirmation dialog: first at PayPal, then locally. If PayPal can't be reached, nothing is removed and the shopper can try again. Every action is checked against the signed-in customer. The page renders in the storefront's layout and account shell, and is sent with `Cache-Control: no-store, private` and `X-Robots-Tag: noindex`.
+It lists the shopper's methods for the current mode (the default first, then the most recently used), marks expired cards, sets the default, and removes a method after a confirmation dialog: first at PayPal, then locally. If PayPal can't be reached, nothing is removed and the shopper can try again. Every action is checked against the signed-in customer. The page renders in the storefront's layout and account shell, and is sent with `Cache-Control: no-store, private` and `X-Robots-Tag: noindex, nofollow`.
 
 To mount the list on your own page:
 
@@ -95,7 +101,7 @@ For React and Vue storefronts. They are registered on the engine's REST stack wh
 
 - `{token}` is the method's local numeric `id`, never PayPal's token id.
 - Every route uses the `ecommerce.admin.mutate` rate policy, like the engine's own `me/*` routes. `DELETE` and `POST` also need an `Idempotency-Key` header.
-- A Sanctum token needs the `ecommerce:storefront` ability (`403` otherwise). An account with no customer record is a `404` (`customer-not-found`), and a method that isn't the shopper's is a `404`.
+- A Sanctum token needs the `ecommerce:storefront` ability (`403` otherwise). For an account with no customer record, `GET` returns an empty list, while `DELETE` and `POST` are a `404` (`customer-not-found`). A method that isn't the shopper's is a `404`.
 
 Each method carries `id`, `type` (`paypal_payment_method`), `method` (`paypal`, `card`, `venmo`), `gateway`, `label`, `brand`, `last_digits`, `expiry`, `expired`, `email`, `is_default`, `mode`, `last_used_at`, and `created_at`. PayPal's token id never leaves the server.
 
@@ -116,5 +122,7 @@ Tokens of the other mode, or of PayPal customers the store doesn't know, are ign
 
 ## Erasure
 
-- **Customer deleted.** When the engine deletes a customer (`ap.ecommerce.customer.deleted`), their local rows are removed right away, and a queued job deletes the current mode's tokens at PayPal, retrying while PayPal is unreachable. The other mode's tokens can only be removed locally.
-- **Uninstall with `--purge`.** The current mode's tokens are deleted at PayPal before the engine drops the tables. See [Installation](Installation#uninstalling).
+- **Customer deleted.** When the engine deletes a customer (`ap.ecommerce.customer.deleted`), their local rows are removed right away, and a queued job deletes the current mode's tokens at PayPal. The job's payload is encrypted, since it holds PayPal token ids. It tries every token: a token PayPal no longer has counts as deleted, and one PayPal refuses for good is logged at `error` and skipped. Tokens that failed because PayPal was unreachable are sent again 10 minutes later, for up to 5 rounds, before the job gives up and logs the count at `critical`. The other mode's tokens can only be removed locally, and without PayPal credentials none can be deleted at PayPal; both cases log a `warning` with the mode and the number of tokens left at PayPal (never their ids), so you can delete them in that PayPal account.
+- **Missed deletions.** The daily `ecommerce-paypal:prune-vault` command erases the vault rows of customers the engine no longer has, in the same way, for when the hook was missed (the package was uninstalled at the time, the customer was deleted without the engine, or the listener failed). See [Artisan Commands](Advanced-Artisan-Commands#ecommerce-paypalprune-vault).
+- **Removed methods.** A method the shopper or PayPal removed is soft-deleted, so its display data (brand, last digits, expiry, email) stays until the same command deletes rows removed more than `vault.prune_after_days` days ago (default 30, `PAYPAL_VAULT_PRUNE_AFTER_DAYS`). A method removed this way never comes back when the same PayPal Order is recorded again.
+- **Uninstall with `--purge`.** The current mode's tokens are deleted at PayPal before the engine drops the tables. If PayPal can't delete any of them, the uninstall stops and nothing is dropped; run it again. See [Installation](Installation#uninstalling).

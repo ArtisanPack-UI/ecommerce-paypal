@@ -68,20 +68,20 @@ class StorePolicy extends Basic
 With a nonce-based policy:
 
 - **PayPal's SDK script.** `paypal-checkout.js` adds the SDK `<script>` with the page's nonce as both `nonce` and PayPal's `data-csp-nonce`, which PayPal uses for the styles it adds. It takes the nonce from the `csp_nonce` client option when a React or Vue wrapper passes one. Otherwise it reuses the nonce of a script already on the page, such as Livewire's or Vite's (`Vite::useCspNonce()`). The Apple Pay and Google Pay scripts it loads get the same nonce.
-- **Inline blocks.** The Livewire drivers and the live Pay Later message use Livewire's `@script` blocks, and the Pay Later Blade component prints an inline `<script type="module">`. Give Livewire your nonce the same way as on the rest of your Livewire pages.
+- **Inline blocks.** The Livewire drivers and the live Pay Later message use Livewire's `@script` blocks; give Livewire your nonce the same way as on the rest of your Livewire pages. The Pay Later Blade component prints its own inline `<script type="module">`, which Livewire's nonce doesn't cover: it takes the nonce from `Vite::cspNonce()`, so call `Vite::useCspNonce()` (for example in your CSP middleware), or pass it yourself with `<x-ecommerce-paypal::pay-later-message :amount="$price" :nonce="$nonce" />`. With neither, the script has no nonce.
 
 If no script on the page carries a nonce and none is passed, the SDK script gets none, and a nonce-only `script-src` blocks it.
 
 ## Webhook security
 
 - Every delivery is signature-verified before anything else: locally against PayPal's certificate (fetched only from PayPal's certificate host for the mode, over TLS) or by PayPal in `postback` mode. See [Webhooks](Webhooks#verification).
-- Transmissions more than 5 minutes off are refused, and the engine dedupes deliveries.
+- Transmissions further from now than `webhook_tolerance_seconds` (3 days by default, PayPal's redelivery horizon) are refused, and the engine dedupes deliveries, so a replayed delivery can't act twice.
 - Bodies are never trusted for money movement: outcomes and side effects re-fetch the capture, refund, dispute, or token from PayPal.
 - Queued jobs carry only ids, so payer data never lands in `jobs` or `failed_jobs`.
 
 ## The Apple Pay route
 
-`/.well-known/apple-developer-merchantid-domain-association` is public. A configured path must be named `apple-developer-merchantid-domain-association`, only HTTPS URLs are fetched (without following redirects), and a file or URL is served only when it looks like Apple's hex file. This keeps a mistaken setting from publishing an arbitrary file, but it can't prove a response came from Apple: any HTTPS endpoint that answers with a long hex string would be served publicly. Only configure a URL you control and trust, such as your own storage bucket.
+`/.well-known/apple-developer-merchantid-domain-association` is public. A configured path must be named `apple-developer-merchantid-domain-association`, only HTTPS URLs are fetched (without following redirects), and whatever the source is, its contents are served only when they look like Apple's hex file, with `X-Content-Type-Options: nosniff`. The settings screen refuses a value that can't be used. This keeps a mistaken setting from publishing an arbitrary file, but it can't prove a response came from Apple: any HTTPS endpoint that answers with a long hex string would be served publicly. Only configure a URL you control and trust, such as your own storage bucket.
 
 ## Logging and redaction
 

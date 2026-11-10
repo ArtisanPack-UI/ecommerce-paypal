@@ -109,7 +109,7 @@ jobs:
     needs: preflight
     # Pinned to an engine release tag: this job hands the workflow the
     # signing key, so never point it at a moving branch.
-    uses: ArtisanPack-UI/ecommerce/.github/workflows/verify-satellite.yml@v1.2.0
+    uses: ArtisanPack-UI/ecommerce/.github/workflows/verify-satellite.yml@v1.3.0
     permissions:
       contents: read
     with:

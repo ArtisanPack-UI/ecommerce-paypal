@@ -7,7 +7,7 @@ title: Availability
 Which PayPal methods a shopper sees is decided in three layers:
 
 1. **Registration.** The four gateways are registered with the engine only while PayPal is enabled and both credentials are set. They stay registered while a method is switched off, so its past orders can still be refunded and reconciled.
-2. **Per cart, on the server.** The package filters `ap.ecommerce.payment.availableGateways` at priority 10. A PayPal gateway is offered only when its `methods.*.enabled` is on, PayPal accepts the cart's currency for it, and the cart total is above zero in PayPal's units.
+2. **Per cart, on the server.** The package filters `ap.ecommerce.payment.availableGateways` at priority 10. A PayPal gateway is offered only when its `methods.*.enabled` is on, PayPal accepts the cart's currency for it, and the cart total is above zero and whole in PayPal's units (a HUF or TWD total with a fraction isn't; see [HUF and TWD](Installation-Configuration#huf-and-twd)).
 3. **Per buyer, in the browser.** PayPal's SDK decides device and buyer eligibility: Apple Pay on Apple devices, Google Pay readiness, Venmo and Pay Later by the buyer's country. A driver hides an ineligible method and tells the checkout.
 
 You can narrow the first two layers from your own code.
