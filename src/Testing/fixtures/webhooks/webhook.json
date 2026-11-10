@@ -1,0 +1,13 @@
+{
+    "id": "0EH40505U7160970P",
+    "url": "https://example.com/ecommerce/webhooks/paypal",
+    "event_types": [
+        { "name": "PAYMENT.CAPTURE.COMPLETED", "description": "A payment capture completes." },
+        { "name": "PAYMENT.CAPTURE.REFUNDED", "description": "A merchant refunds a payment capture." }
+    ],
+    "links": [
+        { "href": "https://api-m.sandbox.paypal.com/v1/notifications/webhooks/0EH40505U7160970P", "rel": "self", "method": "GET" },
+        { "href": "https://api-m.sandbox.paypal.com/v1/notifications/webhooks/0EH40505U7160970P", "rel": "update", "method": "PATCH" },
+        { "href": "https://api-m.sandbox.paypal.com/v1/notifications/webhooks/0EH40505U7160970P", "rel": "delete", "method": "DELETE" }
+    ]
+}

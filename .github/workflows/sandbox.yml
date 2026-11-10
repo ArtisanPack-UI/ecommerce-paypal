@@ -1,0 +1,128 @@
+name: PayPal Sandbox
+
+# The suites that talk to PayPal's real sandbox (docs/advanced/sandbox-tests.md
+# and docs/advanced/browser-tests.md), on demand only. Secrets live in the
+# `paypal-sandbox` environment, so pull requests never see them. Without the
+# secrets every test is skipped rather than failed, so it isn't scheduled.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run at a time: the jobs share one sandbox app.
+  group: paypal-sandbox
+  cancel-in-progress: false
+
+jobs:
+  sandbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    name: Sandbox integration
+    environment: paypal-sandbox
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: '8.4'
+          extensions: dom, curl, libxml, mbstring, zip, pdo, sqlite, pdo_sqlite, intl
+          coverage: none
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-sandbox-composer-${{ hashFiles('**/composer.json') }}
+          restore-keys: ${{ runner.os }}-sandbox-composer-
+
+      - name: Install dependencies
+        run: composer update --no-interaction --prefer-dist
+
+      - name: Run the sandbox suite
+        env:
+          XDEBUG_MODE: off
+          PAYPAL_SANDBOX_CLIENT_ID: ${{ secrets.PAYPAL_SANDBOX_CLIENT_ID }}
+          PAYPAL_SANDBOX_CLIENT_SECRET: ${{ secrets.PAYPAL_SANDBOX_CLIENT_SECRET }}
+          PAYPAL_SANDBOX_CARD_NUMBER: ${{ vars.PAYPAL_SANDBOX_CARD_NUMBER }}
+        run: vendor/bin/pest --testsuite=Sandbox --group=sandbox --no-coverage
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    name: Browser journeys
+    environment: paypal-sandbox
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: '8.4'
+          extensions: dom, curl, libxml, mbstring, zip, pdo, sqlite, pdo_sqlite, intl, sockets
+          coverage: none
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-sandbox-browser-composer-${{ hashFiles('**/composer.json') }}
+          restore-keys: ${{ runner.os }}-sandbox-browser-composer-
+
+      - name: Install PHP dependencies
+        run: composer update --no-interaction --prefer-dist
+
+      - name: Install npm dependencies and Chromium
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Build the browser stylesheet
+        run: npm run build:browser
+
+      - name: Run the browser journeys
+        # PayPal's pages are slow and a stuck step waits without a deadline.
+        timeout-minutes: 30
+        env:
+          XDEBUG_MODE: off
+          PAYPAL_SANDBOX_CLIENT_ID: ${{ secrets.PAYPAL_SANDBOX_CLIENT_ID }}
+          PAYPAL_SANDBOX_CLIENT_SECRET: ${{ secrets.PAYPAL_SANDBOX_CLIENT_SECRET }}
+          PAYPAL_SANDBOX_BUYER_EMAIL: ${{ secrets.PAYPAL_SANDBOX_BUYER_EMAIL }}
+          PAYPAL_SANDBOX_BUYER_PASSWORD: ${{ secrets.PAYPAL_SANDBOX_BUYER_PASSWORD }}
+          PAYPAL_SANDBOX_CARD_NUMBER: ${{ vars.PAYPAL_SANDBOX_CARD_NUMBER }}
+          PAYPAL_SANDBOX_3DS_FRICTIONLESS_CARD: ${{ vars.PAYPAL_SANDBOX_3DS_FRICTIONLESS_CARD }}
+          PAYPAL_SANDBOX_3DS_CHALLENGE_CARD: ${{ vars.PAYPAL_SANDBOX_3DS_CHALLENGE_CARD }}
+          PAYPAL_SANDBOX_3DS_FAILED_CARD: ${{ vars.PAYPAL_SANDBOX_3DS_FAILED_CARD }}
+          PAYPAL_SANDBOX_3DS_CODE: ${{ vars.PAYPAL_SANDBOX_3DS_CODE }}
+        run: vendor/bin/pest --testsuite=Browser --group=sandbox --no-coverage
+
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sandbox-browser-screenshots
+          path: tests/Browser/Screenshots
+          if-no-files-found: ignore
+          retention-days: 14

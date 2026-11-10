@@ -2,9 +2,11 @@
 
 declare( strict_types=1 );
 
+use ArtisanPackUI\Ecommerce\Ecommerce;
 use ArtisanPackUI\Ecommerce\Registries\SatelliteRegistry;
 use ArtisanPackUI\EcommercePayPal\EcommercePayPalServiceProvider;
 use ArtisanPackUI\EcommercePayPal\Satellite\PayPalUninstaller;
+use Illuminate\Container\Container;
 use Illuminate\Support\ServiceProvider;
 
 it( 'boots alongside the engine', function (): void {
@@ -40,6 +42,36 @@ it( 'keeps its migrations in a dedicated directory', function (): void {
         ->toBeDirectory()
         ->and( $this->app['migrator']->paths() )->toContain( EcommercePayPalServiceProvider::migrationsPath() );
 } );
+
+it( 'skips its migrations when the host ignores the engine\'s', function ( bool $ignored ): void {
+    $container = new Container();
+    $migrator  = new class() {
+        /** @var array<int, string> */
+        public array $paths = [];
+
+        public function path( string $path ): void
+        {
+            $this->paths[] = $path;
+        }
+    };
+
+    $container->instance( 'migrator', $migrator );
+
+    try {
+        if ( $ignored ) {
+            Ecommerce::ignoreMigrations();
+        }
+
+        ( fn () => $this->registerMigrations() )->call( new EcommercePayPalServiceProvider( $container ) );
+    } finally {
+        Ecommerce::$runsMigrations = true;
+    }
+
+    expect( $migrator->paths )->toBe( $ignored ? [] : [ EcommercePayPalServiceProvider::migrationsPath() ] );
+} )->with( [
+    'ignored'     => [ true ],
+    'not ignored' => [ false ],
+] );
 
 it( 'registers the view namespace', function (): void {
     expect( $this->app['view']->getFinder()->getHints() )->toHaveKey( 'ecommerce-paypal' );

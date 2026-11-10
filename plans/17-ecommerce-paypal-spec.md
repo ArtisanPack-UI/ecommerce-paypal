@@ -67,7 +67,7 @@ When the parent plan and this spec disagree on PayPal behavior, this spec wins. 
 | D6 | Intent | Configurable `intent`: `capture` (default) or `authorize`. With `authorize`, finalize authorizes the Order and `capturePayment()` captures the authorization. Fraud-blocked orders void it (engine §8.4). | It mirrors Stripe's manual-capture option and supports stores that capture on shipment. |
 | D7 | Webhook verification | **Local verification by default**, using PayPal's documented signature scheme: `transmission_id \| transmission_time \| webhook_id \| crc32(body)`, signed with SHA256withRSA, checked against the certificate at `PAYPAL-CERT-URL`. The certificate URL must be HTTPS on `api.paypal.com` / `api.sandbox.paypal.com`, and certificates are cached. Optional `postback` mode calls `/v1/notifications/verify-webhook-signature` instead. Several webhook ids are accepted, so a webhook can be rotated. | It saves a round-trip per event and works during PayPal API degradation. The host allowlist blocks certificate-URL substitution. |
 | D8 | Vault storage | **Owned by this package**: the `ecommerce_paypal_payment_tokens` table holds token ids and display data only (brand, last 4, expiry, PayPal email), plus the PayPal customer id per engine customer. | The engine has no generic saved-instrument store yet. If it gains one later, this table migrates into it. |
-| D9 | JS SDK | **PayPal JS SDK v5** (`/sdk/js`, with `components=buttons,card-fields,messages,applepay,googlepay`). Moving to the v6 web SDK is evaluated in #14 and adopted only if it reaches parity for card fields, Apple Pay, Google Pay, and vault. | v5 is the one where every method in D1 is generally available today. |
+| D9 | JS SDK | **PayPal JS SDK v5** (`/sdk/js`, with `components=buttons,card-fields,messages,applepay,googlepay`). v6 was evaluated in #14 (2026-11-09) and **not adopted for 1.0**; see §9.1. | v5 is the one where every method in D1 is generally available today. |
 | D10 | Front-end build | **No package CSS build.** Driver views use Tailwind/daisyUI classes the host compiles (the install command prints the `@source` line). The JS module ships prebuilt in `dist/` and is published as a public asset. | Same as the storefront satellites. |
 | D11 | Engine release | Requires `artisanpack-ui/ecommerce ^1.3` (for #207). | The addition is non-breaking and lands in engine v1.3. |
 
@@ -155,7 +155,7 @@ The same values are exposed in the engine's settings UI through `SettingsRegistr
 | `paypal-apple-pay` | Apple Pay | `paypal-apple-pay` | `apple_pay` | yes | no |
 | `paypal-google-pay` | Google Pay | `paypal-google-pay` | `google_pay` | yes | no |
 
-All four extend an abstract `PayPalGateway` that shares the client, payload builder, capture, void, refund, and status mapping. Each subclass supplies its key, label, payment source, and client config. Only `paypal` serves webhooks. Its `handleWebhook()` verifies and maps every event (§8), and it implements `SharesWebhookEndpoint::webhookGatewayKeys()`, returning the enabled sibling keys (#207). A webhook posted to a sibling key's URL (`webhooks/paypal-card`) returns `WebhookResult::unverified( 'use_paypal_endpoint' )`.
+All four extend an abstract `PayPalGateway` that shares the client, payload builder, capture, void, refund, and status mapping. Each subclass supplies its key, label, payment source, and client config. Only `paypal` serves webhooks. Its `handleWebhook()` verifies and maps every event (§8), and it implements `SharesWebhookEndpoint::webhookGatewayKeys()`, returning all sibling keys, enabled or not, so a method switched off after orders were placed still reconciles (#207). A webhook posted to a sibling key's URL (`webhooks/paypal-card`) returns `WebhookResult::unverified( 'use_paypal_endpoint' )`.
 
 ### 6.2 Availability
 
@@ -284,6 +284,16 @@ Disputes don't change the order status; that's left to store policy, for example
 
 The React and Vue storefronts wrap these functions; that work is tracked in those packages.
 
+**v6 evaluation (#14, 2026-11-09).** The v6 web SDK now ships `card-fields`, `applepay-payments`, and `googlepay-payments` components, and documents saving cards with and without a purchase. It was still not adopted for 1.0, for three reasons:
+
+- **Google Pay vaulting.** No v6 documentation confirms it.
+- **Apple Pay saved payments.** PayPal's docs say the SDK can't show them.
+- **Different integration.** v6 replaces the `?client-id=` script with a server-minted client token and per-method payment sessions. That means another server endpoint and a different approval flow for every driver.
+
+The module's public functions (`loadSdk`, `mountButtons`, `mountCardFields`, `mountApplePay`, `mountGooglePay`, `mountMessages`) don't expose SDK details beyond the client config. A later move to v6 therefore stays inside `paypal-checkout.js` and the gateways' `clientConfig()`. Re-evaluate for 1.x once v6 documents Google Pay vaulting. Sources: [v6 reference](https://developer.paypal.com/sdk/js/reference), [v4/v5 → v6 upgrade guide](https://developer.paypal.com/v4-v6), [v6 card vaulting](https://docs.paypal.ai/payments/save/sdk/cards/js-sdk-v6-vault).
+
+**Build.** `npm run build` (Vite) writes `dist/paypal-checkout.js`, which is committed, so Composer users need no Node toolchain. CI runs the Vitest suite and fails when `dist/` doesn't match the source. `ecommerce-paypal:install` publishes it (tag `ecommerce-paypal-assets`) and prints the CSP lines below.
+
 CSP requirements are documented for these hosts:
 - `script-src`: `https://www.paypal.com`, `https://*.paypal.com`, `https://applepay.cdn-apple.com`, `https://pay.google.com`
 - `frame-src`: `https://*.paypal.com`, `https://pay.google.com`
@@ -298,7 +308,13 @@ Each driver extends the storefront's `Livewire\Payment\PaymentDriver` and is reg
 
 - Smart buttons for PayPal, Pay Later, and Venmo, with eligibility checked by the SDK. `createOrder` returns the session reference (the Order was already created server-side).
 - `onApprove` calls `confirm()`, and `onCancel` keeps the shopper on the payment step with a polite message.
-- An `INSTRUMENT_DECLINED` failure from finalize restarts the buttons (`actions.restart()`).
+- An `INSTRUMENT_DECLINED` failure from finalize restarts the buttons. Finalize runs in a later checkout request, after `onApprove` has resolved, so `actions.restart()` from the original approval isn't available. Instead:
+  - the gateway records the decline (`orders.meta.paypal.instrument_declines`);
+  - the checkout re-mounts the driver for the placed order, and the gateway's client config then carries `options.restart: true`;
+  - the driver shows "PayPal declined that payment method…" and renders the buttons on the same Order, so the buyer picks another funding source in PayPal;
+  - the next capture uses a new `PayPal-Request-Id` (`capture-{id}-{n}`), so PayPal doesn't replay the cached decline.
+
+  `paypal-checkout.js` also supports `actions.restart()` for wrappers that keep `onApprove` pending until finalize answers: they resolve it with `{ restart: true }`. *To verify in the sandbox (#28): PayPal reopens approval when `createOrder` returns an Order that is already `APPROVED`.*
 - Button style comes from config. Buttons carry a translated `aria-label` wrapper, and focus returns to the step heading after a cancel.
 
 ### 9.4 Card fields (`paypal-card-fields`)
@@ -322,6 +338,20 @@ Each driver extends the storefront's `Livewire\Payment\PaymentDriver` and is reg
 ### 9.7 Pay Later messaging
 
 The `<x-ecommerce-paypal::pay-later-message :amount="…" placement="product|cart|payment" />` component (also a Livewire component for live totals) renders PayPal's messages where `pay_later_messaging.*` allows it. It works without the buttons.
+
+How it was built (#16):
+
+- **Gates.** A message renders only when PayPal is active, the `paypal` method and its Pay Later option are on, `pay_later_messaging.{product|cart|checkout}` is on for the placement (`payment` uses `checkout`), the currency is one Pay Later takes (AUD, EUR, GBP, USD), and the amount is above zero. Otherwise nothing renders. Buyer eligibility is PayPal's call.
+- **Amount.** `:amount` takes a `Money` or minor units, with `currency=""` (default: the store's base currency).
+- **Layout.** The box reserves a line's height (`min-h-6`), so nothing shifts while PayPal loads. PayPal's own accessible markup is kept.
+- **Shared SDK.** The message mounts through `paypal-checkout.js`'s `mountMessages()` with the same SDK settings as the checkout drivers, so a page with both loads the SDK once.
+- **Live totals.** `<livewire:artisanpack-ecommerce-paypal-pay-later-message placement="cart" />` shows the shopper's storefront cart total and follows `ecommerce-cart-updated`. The box stays rendered (hidden) while the total is zero, so the message returns when items are added. To fix the amount instead, pass `:amount` as an integer in minor units with `currency`. Use the Blade component for a `Money`.
+
+Storefront-livewire integration (host views):
+
+- **Product page.** Publish or extend the product view and add `<x-ecommerce-paypal::pay-later-message :amount="$price" placement="product" />` under the price, where `$price` is the displayed `Money`.
+- **Cart page and drawer.** Add `<livewire:artisanpack-ecommerce-paypal-pay-later-message placement="cart" />` under the totals.
+- **Checkout.** Add the same Livewire component with `placement="payment"` above the payment methods. It's on by default (`pay_later_messaging.checkout`).
 
 ## 10. Vaulting
 

@@ -1,0 +1,31 @@
+{
+    "events": [
+        {
+            "id": "WH-58D329510W468432D-8HN650336L201105X",
+            "create_time": "2026-11-09T12:05:01.000Z",
+            "resource_type": "capture",
+            "event_version": "1.0",
+            "event_type": "PAYMENT.CAPTURE.COMPLETED",
+            "summary": "Payment completed for $ 100.0 USD",
+            "resource_version": "2.0",
+            "resource": {
+                "id": "3C679366HH908993F",
+                "status": "COMPLETED",
+                "amount": { "currency_code": "USD", "value": "100.00" },
+                "final_capture": true,
+                "custom_id": "1",
+                "invoice_id": "cart-1-1",
+                "supplementary_data": { "related_ids": { "order_id": "5O190127TN364715T" } },
+                "create_time": "2026-11-09T12:05:00Z",
+                "update_time": "2026-11-09T12:05:00Z"
+            },
+            "links": [
+                { "href": "https://api-m.sandbox.paypal.com/v1/notifications/webhooks-events/WH-58D329510W468432D-8HN650336L201105X", "rel": "self", "method": "GET" }
+            ]
+        }
+    ],
+    "count": 1,
+    "links": [
+        { "href": "https://api-m.sandbox.paypal.com/v1/notifications/webhooks-events?page_size=50", "rel": "self", "method": "GET" }
+    ]
+}

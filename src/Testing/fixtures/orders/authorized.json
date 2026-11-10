@@ -1,0 +1,50 @@
+{
+    "id": "5O190127TN364715T",
+    "intent": "AUTHORIZE",
+    "status": "COMPLETED",
+    "payment_source": {
+        "card": {
+            "name": "John Doe",
+            "last_digits": "1111",
+            "expiry": "2030-12",
+            "brand": "VISA",
+            "type": "CREDIT",
+            "authentication_result": {
+                "liability_shift": "POSSIBLE",
+                "three_d_secure": { "enrollment_status": "Y", "authentication_status": "Y" }
+            }
+        }
+    },
+    "purchase_units": [
+        {
+            "reference_id": "default",
+            "custom_id": "1",
+            "invoice_id": "cart-1-1",
+            "amount": { "currency_code": "USD", "value": "100.00" },
+            "payments": {
+                "authorizations": [
+                    {
+                        "id": "0VF52814937998046",
+                        "status": "CREATED",
+                        "amount": { "currency_code": "USD", "value": "100.00" },
+                        "custom_id": "1",
+                        "invoice_id": "cart-1-1",
+                        "seller_protection": { "status": "ELIGIBLE" },
+                        "expiration_time": "2026-12-08T12:05:00Z",
+                        "links": [
+                            { "href": "https://api-m.sandbox.paypal.com/v2/payments/authorizations/0VF52814937998046", "rel": "self", "method": "GET" },
+                            { "href": "https://api-m.sandbox.paypal.com/v2/payments/authorizations/0VF52814937998046/capture", "rel": "capture", "method": "POST" },
+                            { "href": "https://api-m.sandbox.paypal.com/v2/payments/authorizations/0VF52814937998046/void", "rel": "void", "method": "POST" },
+                            { "href": "https://api-m.sandbox.paypal.com/v2/checkout/orders/5O190127TN364715T", "rel": "up", "method": "GET" }
+                        ],
+                        "create_time": "2026-11-09T12:05:00Z",
+                        "update_time": "2026-11-09T12:05:00Z"
+                    }
+                ]
+            }
+        }
+    ],
+    "links": [
+        { "href": "https://api-m.sandbox.paypal.com/v2/checkout/orders/5O190127TN364715T", "rel": "self", "method": "GET" }
+    ]
+}

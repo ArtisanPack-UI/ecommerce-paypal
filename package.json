@@ -1,0 +1,21 @@
+{
+    "private": true,
+    "type": "module",
+    "description": "Builds and tests the shared PayPal checkout module (resources/js/paypal-checkout.js → dist/paypal-checkout.js), and builds the browser test harness’s stylesheet. dist/ is committed, so Composer users need no Node toolchain.",
+    "scripts": {
+        "build": "vite build",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "build:browser": "vite build --config vite.browser.config.js"
+    },
+    "devDependencies": {
+        "@tailwindcss/vite": "^4.3.5",
+        "daisyui": "~5.0.48",
+        "jsdom": "^27.0.0",
+        "laravel-vite-plugin": "^2.1.0",
+        "playwright": "^1.65.0",
+        "tailwindcss": "^4.3.5",
+        "vite": "^7.3.0",
+        "vitest": "^4.0.0"
+    }
+}

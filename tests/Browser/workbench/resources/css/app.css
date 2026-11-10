@@ -1,0 +1,17 @@
+/*
+ * Stands in for a host application's Tailwind entry: this package's views,
+ * the storefront's, and the component library's are added as sources, as
+ * the install commands tell a host to do.
+ */
+@import 'tailwindcss';
+
+@source '../../../../../resources/views/**/*.blade.php';
+@source '../../../../../vendor/artisanpack-ui/ecommerce-storefront-livewire/resources/views/**/*.blade.php';
+@source '../../../../../vendor/artisanpack-ui/livewire-ui-components/resources/views/**/*.php';
+@source '../../../../../vendor/artisanpack-ui/livewire-ui-components/src/**/*.php';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@plugin "daisyui" {
+    themes: light --default, dark --prefersdark;
+}

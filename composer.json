@@ -32,9 +32,10 @@
     "ext-openssl": "*",
     "illuminate/support": "^12.0|^13.0",
     "illuminate/http": "^12.0|^13.0",
-    "artisanpack-ui/ecommerce": "^1.2",
+    "artisanpack-ui/ecommerce": "^1.3",
     "artisanpack-ui/core": "^1.0",
-    "artisanpack-ui/hooks": "^1.0"
+    "artisanpack-ui/hooks": "^1.2",
+    "moneyphp/money": "^4.1"
   },
   "require-dev": {
     "pestphp/pest": "^4.0",
@@ -45,7 +46,10 @@
     "dealerdirect/phpcodesniffer-composer-installer": "^1.0",
     "laravel/pint": "^1.26",
     "orchestra/testbench": "^10.2|^11.0",
-    "friendsofphp/php-cs-fixer": "^3.75"
+    "friendsofphp/php-cs-fixer": "^3.75",
+    "artisanpack-ui/ecommerce-storefront-livewire": "^1.0",
+    "artisanpack-ui/ecommerce-admin-livewire": "^1.0",
+    "rebing/graphql-laravel": "^9.0|^10.0"
   },
   "suggest": {
     "artisanpack-ui/ecommerce-storefront-livewire": "Livewire payment drivers, Pay Later messaging, and the account saved-methods page.",
@@ -60,7 +64,17 @@
     "fix": "./vendor/bin/php-cs-fixer fix",
     "cs": "./vendor/bin/phpcs",
     "cs:fix": "./vendor/bin/phpcbf",
-    "test": "./vendor/bin/pest --testsuite=Unit,Feature"
+    "test": "./vendor/bin/pest --testsuite=Unit,Feature",
+    "test:sandbox": "./vendor/bin/pest --testsuite=Sandbox --group=sandbox",
+    "test:browser": [
+      "npm run build:browser",
+      "./vendor/bin/pest --testsuite=Browser --group=browser --exclude-group=sandbox"
+    ],
+    "test:browser:sandbox": [
+      "npm run build:browser",
+      "./vendor/bin/pest --testsuite=Browser --group=sandbox"
+    ],
+    "ecommerce:verify-satellite": "ecommerce-verify-satellite"
   },
   "config": {
     "sort-packages": false,

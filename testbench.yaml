@@ -1,6 +1,16 @@
 # Boots the package in Orchestra Testbench's skeleton so engine Artisan
 # commands can run outside a host app — e.g. CI's
-# `vendor/bin/testbench ecommerce:lint:pci-columns`.
+# `vendor/bin/testbench ecommerce:lint:pci-columns` and
+# `ecommerce-verify-satellite`.
+#
+# The gateways only register while PayPal is enabled with credentials
+# (spec §6.2), so the satellite verifier's discovery boot gets placeholder
+# ones. They never reach PayPal: discovery doesn't call the API, and the
+# contract tests use PayPalFake.
+env:
+  - PAYPAL_ENABLED=true
+  - PAYPAL_CLIENT_ID=verify-client-id
+  - PAYPAL_CLIENT_SECRET=verify-client-secret
 providers:
   - Laravel\Sanctum\SanctumServiceProvider
   - Laravel\Scout\ScoutServiceProvider

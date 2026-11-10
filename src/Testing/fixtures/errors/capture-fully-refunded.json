@@ -1,0 +1,8 @@
+{
+    "name": "UNPROCESSABLE_ENTITY",
+    "details": [
+        { "issue": "CAPTURE_FULLY_REFUNDED", "description": "The capture has already been fully refunded." }
+    ],
+    "message": "The requested action could not be performed, semantically incorrect, or failed business validation.",
+    "debug_id": "f5f43a5c5d1f4"
+}
