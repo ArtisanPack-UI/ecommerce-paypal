@@ -27,8 +27,10 @@ use Money\Money;
  *
  * HUF and TWD have two ISO decimals but PayPal takes them whole, so those
  * amounts are rounded half-up to a whole unit on the way out. The rounding
- * difference is what {@see \ArtisanPackUI\EcommercePayPal\Payloads\OrderPayloadBuilder}
- * reconciles so PayPal's totals still match the engine's.
+ * difference between line items and the breakdown is what
+ * {@see \ArtisanPackUI\EcommercePayPal\Payloads\OrderPayloadBuilder}
+ * reconciles; the total itself must already be whole
+ * ({@see self::isExact()}), or PayPal isn't offered.
  *
  * @package    ArtisanPack_UI
  * @subpackage EcommercePayPal
@@ -143,6 +145,22 @@ final class PayPalMoney
     public static function fromUnits( int $units, Currency $currency ): Money
     {
         return new Money( $units * ( 10 ** ( self::subunit( $currency ) - self::decimals( $currency ) ) ), $currency );
+    }
+
+    /**
+     * Whether `$money` converts to PayPal units without rounding: always
+     * for most currencies, and only for whole amounts in currencies PayPal
+     * takes with fewer decimals than ISO 4217 (HUF, TWD).
+     *
+     * @since 1.0.0
+     *
+     * @param  Money  $money  Engine money.
+     *
+     * @return bool
+     */
+    public static function isExact( Money $money ): bool
+    {
+        return self::fromUnits( self::toUnits( $money ), $money->getCurrency() )->equals( $money );
     }
 
     /**

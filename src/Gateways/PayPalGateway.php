@@ -21,6 +21,7 @@ use ArtisanPackUI\Ecommerce\Contracts\RendersClientPayment;
 use ArtisanPackUI\Ecommerce\Exceptions\PaymentCurrencyMismatchException;
 use ArtisanPackUI\Ecommerce\Models\Cart;
 use ArtisanPackUI\Ecommerce\Models\Order;
+use ArtisanPackUI\Ecommerce\Models\OrderTimelineEntry;
 use ArtisanPackUI\Ecommerce\Models\Refund;
 use ArtisanPackUI\Ecommerce\Services\CheckoutService;
 use ArtisanPackUI\Ecommerce\ValueObjects\PaymentResult;
@@ -44,6 +45,7 @@ use ArtisanPackUI\EcommercePayPal\Support\PayPalOrderMeta;
 use ArtisanPackUI\EcommercePayPal\Vault\PayPalVault;
 use ArtisanPackUI\EcommercePayPal\Webhooks\PayPalOrderLocator;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Money\Currency;
@@ -219,6 +221,10 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
      * is something to pay once the total is in PayPal's units (a HUF total
      * under half a forint rounds to nothing).
      *
+     * PayPal takes HUF and TWD in whole units only, so a total with a
+     * fraction ({@see PayPalMoney::isExact()}) isn't offered: PayPal would
+     * charge a rounded amount the engine could never finalize against.
+     *
      * Device eligibility (Apple Pay, Google Pay) and buyer-country
      * eligibility (Venmo, Pay Later) are decided by the JS SDK.
      *
@@ -232,10 +238,13 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
     {
         $currency = strtoupper( (string) ( $cart->getAttribute( 'currency' ) ?: $cart->getAttribute( 'total_currency' ) ?: '' ) );
 
-        return $this->isEnabled()
-            && '' !== $currency
-            && PayPalCurrencies::supports( $this->method(), $currency )
-            && PayPalMoney::toUnits( new Money( (int) ( $cart->getAttribute( 'total_amount' ) ?? 0 ), new Currency( $currency ) ) ) > 0;
+        if ( ! $this->isEnabled() || '' === $currency || ! PayPalCurrencies::supports( $this->method(), $currency ) ) {
+            return false;
+        }
+
+        $total = new Money( (int) ( $cart->getAttribute( 'total_amount' ) ?? 0 ), new Currency( $currency ) );
+
+        return PayPalMoney::toUnits( $total ) > 0 && PayPalMoney::isExact( $total );
     }
 
     /**
@@ -354,16 +363,16 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
      * Creates the PayPal Order for `$cart` (spec §7.1).
      *
      * The body comes from {@see OrderPayloadBuilder} (and the
-     * `ap.ecommerce.paypal.orderPayload` filter). It is sent with
-     * `PayPal-Request-Id` set to `$context['idempotency_key']`, or, without
-     * one, a UUID kept on `cart.meta.paypal.request_id` for as long as the
-     * cart's total, currency, and gateway stay the same: reloading the
-     * payment step returns the same Order instead of creating another.
+     * `ap.ecommerce.paypal.orderPayload` filter). Its `PayPal-Request-Id`
+     * is derived from `$context['idempotency_key']` together with the cart
+     * and gateway (`session-{cart}-{hash}`, at most 108 characters), since
+     * the engine scopes its keys per shopper while PayPal's request ids are
+     * global to the merchant. Without a key, a UUID kept on
+     * `cart.meta.paypal.request_id` is used until it produces an Order
+     * ({@see self::cartRequestId()}). The `invoice_id` is derived from the
+     * request id, so a retried request always carries the same body.
      *
-     * @since 1.0.0
-     *
-     * @param  Cart                  $cart     Cart.
-     * @param  array<string, mixed>  $context  `idempotency_key`, plus the payload builder's context.
+     * An Order PayPal returns for another cart (its `custom_id`) is refused.
      *
      * Payment options (`$context['payment_options']`, validated by the
      * engine against {@see self::paymentOptionRules()}) are applied first:
@@ -374,20 +383,37 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
      * the Order pays with its `vault_id` (spec §10.2). A token PayPal
      * reports invalid is soft-deleted and the shopper told to pick again.
      *
+     * @since 1.0.0
+     *
+     * @param  Cart                  $cart     Cart.
+     * @param  array<string, mixed>  $context  `idempotency_key`, plus the payload builder's context.
+     *
+     * @throws RuntimeException           When the total isn't a whole amount in a currency PayPal takes whole (HUF, TWD).
      * @throws PayPalApiException         When PayPal refuses or can't be reached.
      * @throws PayPalSavedMethodException When the saved card can't be used (or PayPal rejected it).
-     * @throws UnexpectedValueException   When PayPal's answer has no id or amount.
+     * @throws UnexpectedValueException   When PayPal's answer has no id or amount, or belongs to another cart.
      *
      * @return PaymentSession
      */
     public function createPaymentSession( Cart $cart, array $context = [] ): PaymentSession
     {
+        $total = $this->cartTotal( $cart );
+
+        if ( null !== $total && ! PayPalMoney::isExact( $total ) ) {
+            throw new RuntimeException( __( 'PayPal only accepts whole :currency amounts.', [ 'currency' => $total->getCurrency()->getCode() ] ) );
+        }
+
         $vault     = app( PayPalVault::class );
         $context   = $this->withPaymentOptions( $cart, $vault, $context );
+        $keyed     = isset( $context['idempotency_key'] ) && '' !== trim( (string) $context['idempotency_key'] );
+        $requestId = $keyed
+            ? 'session-' . $cart->getKey() . '-' . substr( hash( 'sha256', $this->key() . '|' . (string) $context['idempotency_key'] ), 0, 40 )
+            : $this->cartRequestId( $cart, self::savedCardVariant( $context ) );
+
+        $context['attempt'] ??= substr( hash( 'sha256', $requestId ), 0, 10 );
+
         $payload   = $this->payloads->build( $cart, $this, $context );
         $savedCard = $this->savedCardIn( $cart, $payload, $context );
-        $keyed     = isset( $context['idempotency_key'] ) && '' !== trim( (string) $context['idempotency_key'] );
-        $requestId = $keyed ? (string) $context['idempotency_key'] : $this->cartRequestId( $cart, null === $savedCard ? '' : 'saved-' . $savedCard->getKey() );
 
         try {
             $order = $this->client->orders()->create( $payload, $requestId );
@@ -404,6 +430,10 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
 
         if ( '' === $order->id() ) {
             throw new UnexpectedValueException( 'PayPal created an order without an id.' );
+        }
+
+        if ( null !== $order->customId() && $order->customId() !== (string) $cart->getKey() ) {
+            throw new UnexpectedValueException( 'PayPal returned an Order for another cart.' );
         }
 
         if ( $vault->enabled() ) {
@@ -426,8 +456,12 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
      *
      * The session carries the Order's amount, its normalized status, the
      * `payer-action` link, and, in `metadata`, the PayPal status, intent,
-     * payment source, 3-D Secure `liability_shift`, and the capture
-     * (`charge`) or authorization id when there is one.
+     * payment source, 3-D Secure `liability_shift`, `saved_card` (`yes`
+     * when a saved card pays), and the capture (`charge`) or authorization
+     * id when there is one. A card Order the buyer's browser captured
+     * without the liability shift the policy needs is reported
+     * `processing`, not `succeeded`, so the engine still calls
+     * {@see self::capturePayment()}, which refunds and refuses it.
      *
      * @since 1.0.0
      *
@@ -453,10 +487,21 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
      * An Order that is already captured returns its existing capture, so a
      * second call never moves money twice. Card and wallet payments whose
      * 3-D Secure result doesn't shift liability are refused when
-     * `methods.card.require_liability_shift` is on. Declines return a
+     * `methods.card.require_liability_shift` is on
+     * ({@see self::rejectsLiabilityShift()}); one the buyer's browser
+     * already captured is refunded in full, with a
+     * `paypal.liability_shift_refunded` timeline entry. Declines return a
      * failed result ({@see PayPalDeclines::payment()}); a `PENDING` capture
      * succeeds and is settled by webhook. The capture id, authorization,
      * and payer details go to `orders.meta.paypal`.
+     *
+     * Before anything moves, the PayPal Order is checked against the order:
+     * an Order created for another cart (its `custom_id`) fails with
+     * `paypal_order_mismatch`, and one paid with a source this gateway
+     * doesn't take ({@see self::acceptedSources()}) with
+     * `payment_source_mismatch`. An approved Order whose shipping address
+     * differs from the order's is updated first
+     * ({@see self::syncShippingAddress()}).
      *
      * @since 1.0.0
      *
@@ -477,8 +522,28 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
             return PayPalDeclines::payment( $exception, $session->amount );
         }
 
+        $mismatch = $this->cartMismatch( $order, $paypalOrder, $session );
+
+        if ( null !== $mismatch ) {
+            return $mismatch;
+        }
+
         if ( null !== $paypalOrder->latestCapture() ) {
+            $refusal = $this->liabilityShiftRefusal( $paypalOrder, $session );
+
+            if ( null !== $refusal ) {
+                $this->refundRefusedCapture( $order, $paypalOrder );
+
+                return $refusal;
+            }
+
             return $this->resultFromOrder( $order, $paypalOrder, $session );
+        }
+
+        $source = $paypalOrder->paymentSourceType();
+
+        if ( null !== $source && ! in_array( $source, $this->acceptedSources(), true ) ) {
+            return PaymentResult::terminalFailure( $session->amount, 'payment_source_mismatch', __( 'This payment method can\'t be used here. Choose another way to pay.' ) );
         }
 
         $authorizing = 'AUTHORIZE' === $paypalOrder->intent();
@@ -493,6 +558,14 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
 
         if ( null !== $refusal ) {
             return $refusal;
+        }
+
+        if ( 'APPROVED' === $paypalOrder->status() ) {
+            $patchFailure = $this->syncShippingAddress( $order, $paypalOrder, $session );
+
+            if ( null !== $patchFailure ) {
+                return $patchFailure;
+            }
         }
 
         return $authorizing
@@ -591,9 +664,15 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
      *
      * Sent with `PayPal-Request-Id` set to `$context['idempotency_key']`,
      * `invoice_id` set to `refund-{refund_id}`, `custom_id` set to the engine
-     * refund id (so webhooks match back), and the reason as `note_to_payer`.
-     * Declines return a failed result with a translated message. A `PENDING`
-     * refund succeeds; `PAYMENT.CAPTURE.REFUNDED` confirms it.
+     * refund id (so webhooks match back), and the reason as `note_to_payer`
+     * (PayPal shows it to the buyer, so the engine's reason codes are mapped
+     * first: {@see self::noteToPayer()}). Declines return a failed result
+     * with a translated message. A `PENDING` refund succeeds;
+     * `PAYMENT.CAPTURE.REFUNDED` confirms it.
+     *
+     * An amount PayPal can't take exactly (a HUF or TWD amount with a
+     * fraction) fails with `amount_not_representable` before PayPal is
+     * called: PayPal would round it and refund a different amount.
      *
      * @since 1.0.0
      *
@@ -610,6 +689,14 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
     {
         $this->assertCurrency( $order, $amount );
 
+        if ( ! PayPalMoney::isExact( $amount ) ) {
+            return RefundResult::failure(
+                $amount,
+                'amount_not_representable',
+                __( 'PayPal only refunds whole :currency amounts.', [ 'currency' => $amount->getCurrency()->getCode() ] ),
+            );
+        }
+
         $captureId = $this->captureIdFor( $order, $amount );
 
         if ( $captureId instanceof RefundResult ) {
@@ -620,7 +707,7 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
         $requestId = isset( $context['idempotency_key'] ) && '' !== trim( (string) $context['idempotency_key'] )
             ? (string) $context['idempotency_key']
             : sprintf( 'refund-%s-%d-%s', $captureId, Refund::query()->where( 'order_id', $order->getKey() )->count() + 1, $amount->getAmount() );
-        $reason    = null === $reason || '' === trim( $reason ) ? null : trim( $reason );
+        $reason    = self::noteToPayer( $reason );
 
         try {
             $refund = $this->client->payments()->refundCapture(
@@ -741,21 +828,43 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
     /**
      * Whether a card or wallet payment whose 3-D Secure result is `$shift`
      * must be refused: `methods.card.require_liability_shift` is on and the
-     * result is `NO` or `UNKNOWN` (spec §9.4). PayPal-wallet payments are
-     * never refused here.
+     * result is `NO` or `UNKNOWN` (spec §9.4). With
+     * `methods.card.three_d_secure` set to `SCA_ALWAYS`, a card (`card`
+     * source) with no result at all is refused too, unless it is a saved
+     * card paying (`$vaulted`). PayPal-wallet payments are never refused
+     * here.
+     *
+     * Apple Pay and Google Pay aren't held to `SCA_ALWAYS`: the setting is
+     * only sent to PayPal for card fields, so a wallet with no result
+     * didn't skip a check it was asked for.
      *
      * @since 1.0.0
      *
-     * @param  string|null  $source  PayPal payment source.
-     * @param  string|null  $shift   `authentication_result.liability_shift`.
+     * @param  string|null  $source   PayPal payment source.
+     * @param  string|null  $shift    `authentication_result.liability_shift`.
+     * @param  bool         $vaulted  Whether a saved card pays (`vault_id` or `stored_credential`).
      *
      * @return bool
      */
-    public static function rejectsLiabilityShift( ?string $source, ?string $shift ): bool
+    public static function rejectsLiabilityShift( ?string $source, ?string $shift, bool $vaulted = false ): bool
     {
-        return in_array( $source, self::CARD_SOURCES, true )
-            && (bool) config( 'artisanpack.ecommerce-paypal.methods.card.require_liability_shift', true )
-            && in_array( strtoupper( (string) $shift ), [ 'NO', 'UNKNOWN' ], true );
+        if ( ! in_array( $source, self::CARD_SOURCES, true ) || ! (bool) config( 'artisanpack.ecommerce-paypal.methods.card.require_liability_shift', true ) ) {
+            return false;
+        }
+
+        $shift = strtoupper( trim( (string) $shift ) );
+
+        if ( in_array( $shift, [ 'NO', 'UNKNOWN' ], true ) ) {
+            return true;
+        }
+
+        // `SCA_ALWAYS` asks PayPal to authenticate every card, so a card
+        // with no result skipped it. Saved cards are exempt: a customer-
+        // initiated vaulted payment runs no 3-D Secure.
+        return '' === $shift
+            && 'card' === $source
+            && ! $vaulted
+            && 'SCA_ALWAYS' === strtoupper( (string) config( 'artisanpack.ecommerce-paypal.methods.card.three_d_secure', 'SCA_WHEN_REQUIRED' ) );
     }
 
     /**
@@ -896,6 +1005,31 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
             true === filter_var( $options[ self::SAVE_OPTION ] ?? false, FILTER_VALIDATE_BOOLEAN ),
             is_numeric( $saved ) ? (int) $saved : null,
         ];
+    }
+
+    /**
+     * The refund's `note_to_payer`, which PayPal shows to the buyer: the
+     * engine's reason codes for automatic refunds become a sentence
+     * (`requested_by_customer`) or nothing (`fraudulent`, `duplicate`);
+     * free text passes through trimmed. Null when there is nothing to say.
+     *
+     * @since 1.0.0
+     *
+     * @param  string|null  $reason  Refund reason.
+     *
+     * @return string|null
+     */
+    protected static function noteToPayer( ?string $reason ): ?string
+    {
+        $reason = null === $reason ? null : trim( $reason );
+
+        $reason = match ( $reason ) {
+            'fraudulent', 'duplicate' => null,
+            'requested_by_customer'   => __( 'Refund requested by the customer.' ),
+            default                   => $reason,
+        };
+
+        return null === $reason || '' === $reason ? null : $reason;
     }
 
     /**
@@ -1103,9 +1237,19 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
             'intent'          => null === $order->intent() ? null : strtolower( $order->intent() ),
             'payment_source'  => $order->paymentSourceType(),
             'liability_shift' => $order->liabilityShift(),
+            'saved_card'      => self::paysWithSavedCard( $order ) ? 'yes' : null,
             'charge'          => $order->latestCapture()?->id(),
             'authorization'   => $order->latestAuthorization()?->id(),
         ], static fn ( ?string $value ): bool => null !== $value && '' !== $value );
+
+        $status = $this->sessionStatus( $order );
+
+        // A card Order the buyer's browser captured without the 3-D Secure
+        // result the policy needs isn't reported as paid: the engine then
+        // calls capturePayment(), which refunds and refuses it.
+        if ( PaymentSession::STATUS_SUCCEEDED === $status && null !== $order->latestCapture() && self::rejectsOrderLiabilityShift( $order ) ) {
+            $status = PaymentSession::STATUS_PROCESSING;
+        }
 
         return new PaymentSession(
             gatewayKey: $this->key(),
@@ -1113,7 +1257,7 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
             amount: $amount,
             redirectUrl: $order->payerActionUrl(),
             metadata: $metadata,
-            status: $this->sessionStatus( $order ),
+            status: $status,
         );
     }
 
@@ -1182,6 +1326,25 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
     }
 
     /**
+     * What the saved card in `$context` adds to the cart's request id
+     * fingerprint (`saved-{token id}`), or an empty string without one. The
+     * payload builder refuses a token that can't pay, so a built Order
+     * always pays with the card named here.
+     *
+     * @since 1.0.0
+     *
+     * @param  array<string, mixed>  $context  Session context.
+     *
+     * @return string
+     */
+    protected static function savedCardVariant( array $context ): string
+    {
+        $tokenId = $context[ PayPalVault::SAVED_TOKEN_CONTEXT ] ?? null;
+
+        return ( is_int( $tokenId ) || is_string( $tokenId ) ) && '' !== (string) $tokenId ? 'saved-' . $tokenId : '';
+    }
+
+    /**
      * The saved card the built payload pays with, or null.
      *
      * @since 1.0.0
@@ -1209,12 +1372,17 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
      * The `PayPal-Request-Id` for creating an Order when the engine passed
      * no idempotency key: a UUID kept on `cart.meta.paypal`.
      *
-     * The id is reused while the cart's gateway, currency, total, and the
-     * shopper's "save" choice (and saved card, `$variant`) are unchanged
-     * and the engine hasn't stored the
-     * Order it produced (a retry after a crash). Once that Order is the
-     * cart's payment reference, a new create means the engine judged it
-     * unusable, so a new id is minted.
+     * The id is reused only while the cart's gateway, currency, total, and
+     * the shopper's "save" choice (and saved card, `$variant`) are
+     * unchanged **and** it hasn't produced an Order yet, so a create that
+     * failed before PayPal answered is retried with the same id. Once an
+     * Order is recorded for it (`request_order_id`), any new create means
+     * the engine judged that Order unusable (it reset the payment, or the
+     * shopper switched gateways and back), so a new id is minted.
+     *
+     * The engine creates sessions inside a database transaction, which
+     * rolls the stored id back along with a failed create; the reuse only
+     * matters to callers that create sessions outside one.
      *
      * @since 1.0.0
      *
@@ -1237,7 +1405,7 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
         $stored      = isset( $paypal['request_id'] ) && is_string( $paypal['request_id'] ) ? $paypal['request_id'] : '';
         $usedBy      = isset( $paypal['request_order_id'] ) ? (string) $paypal['request_order_id'] : '';
 
-        if ( '' !== $stored && ( $paypal['request_fingerprint'] ?? null ) === $fingerprint && ( '' === $usedBy || $usedBy !== (string) $cart->getAttribute( 'payment_reference' ) ) ) {
+        if ( '' !== $stored && $fingerprint === ( $paypal['request_fingerprint'] ?? null ) && '' === $usedBy ) {
             return $stored;
         }
 
@@ -1324,7 +1492,7 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
      */
     protected function liabilityShiftRefusal( PayPalOrder $order, PaymentSession $session ): ?PaymentResult
     {
-        if ( ! self::rejectsLiabilityShift( $order->paymentSourceType(), $order->liabilityShift() ) ) {
+        if ( ! self::rejectsOrderLiabilityShift( $order ) ) {
             return null;
         }
 
@@ -1333,6 +1501,298 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
             'liability_shift_rejected',
             self::liabilityShiftMessage(),
         );
+    }
+
+    /**
+     * Whether `$order`'s card or wallet payment must be refused under the
+     * liability-shift policy ({@see self::rejectsLiabilityShift()}).
+     *
+     * @since 1.0.0
+     *
+     * @param  PayPalOrder  $order  PayPal Order.
+     *
+     * @return bool
+     */
+    protected static function rejectsOrderLiabilityShift( PayPalOrder $order ): bool
+    {
+        return self::rejectsLiabilityShift( $order->paymentSourceType(), $order->liabilityShift(), self::paysWithSavedCard( $order ) );
+    }
+
+    /**
+     * Whether a saved card pays for `$order`: its card source carries a
+     * `vault_id` or `stored_credential`.
+     *
+     * @since 1.0.0
+     *
+     * @param  PayPalOrder  $order  PayPal Order.
+     *
+     * @return bool
+     */
+    protected static function paysWithSavedCard( PayPalOrder $order ): bool
+    {
+        $card = $order->get( 'payment_source.card' );
+
+        return is_array( $card ) && ( ! empty( $card['vault_id'] ) || ! empty( $card['stored_credential'] ) );
+    }
+
+    /**
+     * Refunds the capture of an Order the buyer's browser captured although
+     * the liability-shift policy refuses it, and writes a
+     * `paypal.liability_shift_refunded` timeline entry (or
+     * `paypal.liability_shift_refund_failed` when PayPal refuses). A capture
+     * that is already refunded (or whose refund is already recorded) is
+     * left alone, so a retry neither refunds nor records it twice.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order        $order        Engine order.
+     * @param  PayPalOrder  $paypalOrder  The captured PayPal Order.
+     *
+     * @return void
+     */
+    protected function refundRefusedCapture( Order $order, PayPalOrder $paypalOrder ): void
+    {
+        $capture = $paypalOrder->latestCapture();
+
+        if ( null === $capture || '' === $capture->id() || ! in_array( $capture->status(), [ 'COMPLETED', 'PENDING' ], true ) ) {
+            return;
+        }
+
+        $alreadyRefunded = OrderTimelineEntry::query()
+            ->where( 'order_id', $order->getKey() )
+            ->where( 'event_type', 'paypal.liability_shift_refunded' )
+            ->exists();
+
+        if ( $alreadyRefunded ) {
+            return;
+        }
+
+        try {
+            $refund = $this->client->payments()->refundCapture(
+                $capture->id(),
+                'liability-refund-' . $capture->id(),
+                $capture->amount(),
+                null,
+                self::liabilityShiftMessage(),
+            );
+        } catch ( PayPalApiException $exception ) {
+            report( $exception );
+
+            $this->timeline( $order, 'paypal.liability_shift_refund_failed', [
+                'order_id'   => $paypalOrder->id(),
+                'capture_id' => $capture->id(),
+                'error'      => $exception->issue() ?? $exception->name,
+                'debug_id'   => $exception->debugId,
+            ] );
+
+            return;
+        }
+
+        $this->timeline( $order, 'paypal.liability_shift_refunded', [
+            'order_id'        => $paypalOrder->id(),
+            'capture_id'      => $capture->id(),
+            'refund_id'       => '' === $refund->id() ? null : $refund->id(),
+            'refund_status'   => $refund->status(),
+            'liability_shift' => $paypalOrder->liabilityShift(),
+        ] );
+    }
+
+    /**
+     * The failure for a PayPal Order that was created for another cart
+     * than the one `$order` was placed from (its `custom_id`), or null when
+     * they match or either side is unknown.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order           $order        Engine order.
+     * @param  PayPalOrder     $paypalOrder  PayPal Order.
+     * @param  PaymentSession  $session      Session.
+     *
+     * @return PaymentResult|null
+     */
+    protected function cartMismatch( Order $order, PayPalOrder $paypalOrder, PaymentSession $session ): ?PaymentResult
+    {
+        $customId = $paypalOrder->customId();
+
+        if ( null === $customId || '' === $customId || null === $order->getKey() ) {
+            return null;
+        }
+
+        $cartId = Cart::query()->where( 'completed_order_id', $order->getKey() )->value( 'id' );
+
+        if ( null === $cartId || (string) $cartId === $customId ) {
+            return null;
+        }
+
+        return PaymentResult::terminalFailure(
+            $session->amount,
+            'paypal_order_mismatch',
+            __( 'This PayPal payment belongs to another checkout. Start the payment again.' ),
+        );
+    }
+
+    /**
+     * The PayPal payment sources this gateway captures. An Order paid with
+     * any other source (a card confirmed on the PayPal gateway, a wallet on
+     * the card gateway) is refused, so a method the store switched off
+     * can't be used through a sibling.
+     *
+     * @since 1.0.0
+     *
+     * @return array<int, string>
+     */
+    protected function acceptedSources(): array
+    {
+        return [ $this->paymentSource() ];
+    }
+
+    /**
+     * Updates an approved PayPal Order's shipping address and recipient to
+     * the order's, when they differ, before it is captured.
+     *
+     * The engine reuses a PayPal Order while the total stays the same, so a
+     * shopper who changed the address afterwards would leave PayPal holding
+     * the old one, which costs the merchant PayPal Seller Protection. Only
+     * PayPal and Venmo Orders carry the address the store provided
+     * (`SET_PROVIDED_ADDRESS`); an Order whose experience context says
+     * otherwise is left alone.
+     *
+     * A PATCH PayPal refuses is logged and recorded as a
+     * `paypal.shipping_patch_failed` timeline entry, and the payment still
+     * goes ahead: the buyer approved the amount, and the address only
+     * protects the merchant. A PATCH that can't reach PayPal returns a
+     * retryable failure.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order           $order        Engine order.
+     * @param  PayPalOrder     $paypalOrder  Approved PayPal Order.
+     * @param  PaymentSession  $session      Session.
+     *
+     * @return PaymentResult|null Null to go ahead with the capture.
+     */
+    protected function syncShippingAddress( Order $order, PayPalOrder $paypalOrder, PaymentSession $session ): ?PaymentResult
+    {
+        $source = $paypalOrder->paymentSourceType();
+
+        if ( ! in_array( $source, [ 'paypal', 'venmo' ], true ) ) {
+            return null;
+        }
+
+        $preference = $paypalOrder->get( 'payment_source.' . $source . '.experience_context.shipping_preference' );
+
+        if ( null !== $preference && 'SET_PROVIDED_ADDRESS' !== $preference ) {
+            return null;
+        }
+
+        $current = $paypalOrder->get( 'purchase_units.0.shipping' );
+        $wanted  = $this->payloads->shippingFor( (array) ( $order->getAttribute( 'shipping_address' ) ?? [] ) );
+
+        if ( ! is_array( $current ) || ! is_array( $current['address'] ?? null ) || null === $wanted ) {
+            return null;
+        }
+
+        $sameAddress = self::sameValues( $current['address'], $wanted['address'] );
+        $sameName    = ! isset( $wanted['name'] ) || self::sameValues( (array) ( $current['name'] ?? [] ), $wanted['name'] );
+
+        if ( $sameAddress && $sameName ) {
+            return null;
+        }
+
+        $path       = "/purchase_units/@reference_id=='default'/shipping";
+        $operations = [ [ 'op' => 'replace', 'path' => $path . '/address', 'value' => $wanted['address'] ] ];
+
+        if ( isset( $wanted['name'] ) ) {
+            $operations[] = [ 'op' => 'replace', 'path' => $path . '/name', 'value' => $wanted['name'] ];
+        }
+
+        try {
+            $this->client->orders()->patch(
+                $paypalOrder->id(),
+                $operations,
+                'patch-' . $paypalOrder->id() . '-' . substr( sha1( (string) json_encode( $wanted ) ), 0, 16 ),
+            );
+        } catch ( PayPalApiException $exception ) {
+            if ( $exception->isRetryable() ) {
+                return PayPalDeclines::payment( $exception, $session->amount );
+            }
+
+            Log::channel( self::logChannel() )->warning( 'Could not update the PayPal Order\'s shipping address before capture.', [
+                'order'           => $order->getKey(),
+                'paypal_order_id' => $paypalOrder->id(),
+                ...$exception->context(),
+            ] );
+
+            $this->timeline( $order, 'paypal.shipping_patch_failed', [
+                'order_id' => $paypalOrder->id(),
+                'error'    => $exception->issue() ?? $exception->name,
+                'debug_id' => $exception->debugId,
+            ] );
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether two PayPal objects (an address, a name) hold the same
+     * non-empty values, ignoring key order and case.
+     *
+     * @since 1.0.0
+     *
+     * @param  array<string, mixed>  $left   One object.
+     * @param  array<string, mixed>  $right  The other.
+     *
+     * @return bool
+     */
+    protected static function sameValues( array $left, array $right ): bool
+    {
+        $normalize = static function ( array $values ): array {
+            $values = array_filter(
+                array_map( static fn ( mixed $value ): string => is_scalar( $value ) ? mb_strtolower( trim( (string) $value ) ) : '', $values ),
+                static fn ( string $value ): bool => '' !== $value,
+            );
+
+            ksort( $values );
+
+            return $values;
+        };
+
+        return $normalize( $left ) === $normalize( $right );
+    }
+
+    /**
+     * Writes an order timeline entry.
+     *
+     * @since 1.0.0
+     *
+     * @param  Order                 $order    Engine order.
+     * @param  string                $type     Event type (`paypal.shipping_patch_failed`, …).
+     * @param  array<string, mixed>  $payload  Payload; null and empty values are dropped.
+     *
+     * @return void
+     */
+    protected function timeline( Order $order, string $type, array $payload ): void
+    {
+        OrderTimelineEntry::query()->create( [
+            'order_id'      => $order->getKey(),
+            'actor_user_id' => null,
+            'event_type'    => $type,
+            'payload'       => array_filter( $payload, static fn ( mixed $value ): bool => null !== $value && '' !== $value ),
+        ] );
+    }
+
+    /**
+     * The configured log channel, or null for the default.
+     *
+     * @since 1.0.0
+     *
+     * @return string|null
+     */
+    protected static function logChannel(): ?string
+    {
+        $channel = config( 'artisanpack.ecommerce-paypal.logging.channel' );
+
+        return is_string( $channel ) && '' !== $channel ? $channel : null;
     }
 
     /**
@@ -1391,12 +1851,22 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
     protected function captureAuthorized( Order $order, PayPalOrder $paypalOrder, PaymentSession $session ): PaymentResult
     {
         if ( null === $paypalOrder->latestAuthorization() ) {
+            $declines  = PayPalOrderMeta::describes( $order, $paypalOrder->id() ) ? (int) PayPalOrderMeta::get( $order, 'instrument_declines', 0 ) : 0;
+            $requestId = 'authorize-' . $paypalOrder->id() . ( $declines > 0 ? '-' . ( $declines + 1 ) : '' );
+
             try {
-                $paypalOrder = $this->client->orders()->authorize( $paypalOrder->id(), 'authorize-' . $paypalOrder->id() );
+                $paypalOrder = $this->client->orders()->authorize( $paypalOrder->id(), $requestId );
             } catch ( PayPalApiException $exception ) {
                 $current = $exception->hasIssue( 'ORDER_ALREADY_AUTHORIZED' ) ? $this->refetch( $paypalOrder->id() ) : null;
 
                 if ( null === $current?->latestAuthorization() ) {
+                    if ( $exception->hasIssue( 'INSTRUMENT_DECLINED' ) ) {
+                        // As in captureOrder(): the buyer picks another
+                        // funding source for the same Order, and the retry
+                        // needs a new request id.
+                        PayPalOrderMeta::merge( $order, [ 'instrument_declines' => $declines + 1 ], $paypalOrder->id() );
+                    }
+
                     return PayPalDeclines::payment( $exception, $session->amount );
                 }
 

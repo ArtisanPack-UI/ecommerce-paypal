@@ -210,7 +210,11 @@ abstract class PayPalPaymentDriver extends PaymentDriver
         $source = $session->metadata['payment_source'] ?? null;
         $shift  = $session->metadata['liability_shift'] ?? null;
 
-        return PayPalGateway::rejectsLiabilityShift( is_string( $source ) ? $source : null, is_string( $shift ) ? $shift : null );
+        return PayPalGateway::rejectsLiabilityShift(
+            is_string( $source ) ? $source : null,
+            is_string( $shift ) ? $shift : null,
+            isset( $session->metadata['saved_card'] ),
+        );
     }
 
     /**

@@ -260,5 +260,10 @@
     ":method will be removed from PayPal and from your account.": ":method will be removed from PayPal and from your account.",
     "Cancel": "Cancel",
     "Remove payment method": "Remove payment method",
-    "Also allow your nonce (or 'unsafe-inline') in script-src and style-src. The checkout module gives PayPal's script the nonce of your page's scripts.": "Also allow your nonce (or 'unsafe-inline') in script-src and style-src. The checkout module gives PayPal's script the nonce of your page's scripts."
+    "Also allow your nonce (or 'unsafe-inline') in script-src and style-src. The checkout module gives PayPal's script the nonce of your page's scripts.": "Also allow your nonce (or 'unsafe-inline') in script-src and style-src. The checkout module gives PayPal's script the nonce of your page's scripts.",
+    "PayPal only accepts whole :currency amounts.": "PayPal only accepts whole :currency amounts.",
+    "PayPal only refunds whole :currency amounts.": "PayPal only refunds whole :currency amounts.",
+    "Refund requested by the customer.": "Refund requested by the customer.",
+    "This PayPal payment belongs to another checkout. Start the payment again.": "This PayPal payment belongs to another checkout. Start the payment again.",
+    "This payment method can't be used here. Choose another way to pay.": "This payment method can't be used here. Choose another way to pay."
 }

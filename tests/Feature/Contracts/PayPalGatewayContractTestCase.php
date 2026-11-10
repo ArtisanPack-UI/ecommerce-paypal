@@ -168,6 +168,7 @@ abstract class PayPalGatewayContractTestCase extends PaymentGatewayContractTest
      */
     protected function captureTerminalDeclineResult(): PaymentResult
     {
+        $this->paypal->respond( 'orders.get', Orders::approvedWith( $this->gateway()->paymentSource() ) );
         $this->paypal->respond( 'orders.capture', Orders::issue( 'TRANSACTION_REFUSED' ), 422 );
 
         return $this->gateway()->capturePayment( Orders::create( [ 'payment_gateway_key' => $this->gatewayKey() ] ), Orders::session( $this->gatewayKey() ) );
@@ -182,6 +183,7 @@ abstract class PayPalGatewayContractTestCase extends PaymentGatewayContractTest
      */
     protected function captureRetryableResult(): PaymentResult
     {
+        $this->paypal->respond( 'orders.get', Orders::approvedWith( $this->gateway()->paymentSource() ) );
         $this->paypal->error( 'orders.capture', 'internal-server-error' );
 
         return $this->gateway()->capturePayment( Orders::create( [ 'payment_gateway_key' => $this->gatewayKey() ] ), Orders::session( $this->gatewayKey() ) );

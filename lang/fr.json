@@ -260,5 +260,10 @@
     ":method will be removed from PayPal and from your account.": ":method sera supprimé de PayPal et de votre compte.",
     "Cancel": "Annuler",
     "Remove payment method": "Supprimer le moyen de paiement",
-    "Also allow your nonce (or 'unsafe-inline') in script-src and style-src. The checkout module gives PayPal's script the nonce of your page's scripts.": "Autorisez aussi votre nonce (ou 'unsafe-inline') dans script-src et style-src. Le module de paiement donne au script de PayPal le nonce des scripts de votre page."
+    "Also allow your nonce (or 'unsafe-inline') in script-src and style-src. The checkout module gives PayPal's script the nonce of your page's scripts.": "Autorisez aussi votre nonce (ou 'unsafe-inline') dans script-src et style-src. Le module de paiement donne au script de PayPal le nonce des scripts de votre page.",
+    "PayPal only accepts whole :currency amounts.": "PayPal n'accepte que des montants entiers en :currency.",
+    "PayPal only refunds whole :currency amounts.": "PayPal ne rembourse que des montants entiers en :currency.",
+    "Refund requested by the customer.": "Remboursement demandé par le client.",
+    "This PayPal payment belongs to another checkout. Start the payment again.": "Ce paiement PayPal appartient à une autre commande. Recommencez le paiement.",
+    "This payment method can't be used here. Choose another way to pay.": "Ce moyen de paiement ne peut pas être utilisé ici. Choisissez un autre moyen de paiement."
 }

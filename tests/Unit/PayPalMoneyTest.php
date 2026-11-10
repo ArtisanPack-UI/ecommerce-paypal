@@ -71,3 +71,16 @@ it( 'round-trips units', function (): void {
         ->and( (int) PayPalMoney::fromUnits( 1235, $currency )->getAmount() )->toBe( 123500 )
         ->and( PayPalMoney::unitsToPayPal( 1235, $currency ) )->toBe( [ 'currency_code' => 'HUF', 'value' => '1235' ] );
 } );
+
+it( 'knows whether an amount converts to PayPal units without rounding', function ( int $amount, string $currency, bool $exact ): void {
+    expect( PayPalMoney::isExact( new Money( $amount, new Currency( $currency ) ) ) )->toBe( $exact );
+} )->with( [
+    'USD cents'           => [ 12345, 'USD', true ],
+    'JPY yen'             => [ 1234, 'JPY', true ],
+    'whole forints'       => [ 123400, 'HUF', true ],
+    'fractional forints'  => [ 123450, 'HUF', false ],
+    'half a forint'       => [ 50, 'HUF', false ],
+    'whole TWD'           => [ 100, 'TWD', true ],
+    'fractional TWD'      => [ 101, 'TWD', false ],
+    'negative whole HUF'  => [ -200, 'HUF', true ],
+] );
