@@ -27,7 +27,7 @@ The contents of PayPal's buttons, card fields, and 3-D Secure modal, and Apple's
 
 - Feature tests cover the labels, live regions, and focus hooks in the rendered driver and account views.
 - The browser suite runs axe (every rule, plus WCAG 2.2 `target-size`) on each driver and on the account page, and removes and re-defaults a saved method by pressing Enter on its focused buttons, checking where focus lands. (Tab order itself is not asserted; it is covered in the manual keyboard pass before each release.) It runs on every pull request without PayPal credentials.
-- A sandbox half of the suite drives the real PayPal sandbox: canceling and approving in PayPal, card validation errors, 3-D Secure, and where focus goes after a refused card. It is scheduled nightly and on release branches, and runs once the `paypal-sandbox` CI environment has its sandbox credentials; until then it is skipped. See [Browser Tests](Advanced-Browser-Tests).
+- A sandbox half of the suite drives the real PayPal sandbox: canceling and approving in PayPal, card validation errors, 3-D Secure, and where focus goes after a refused card. It runs on demand with sandbox credentials, locally or through the `sandbox.yml` workflow, and is skipped without them. See [Browser Tests](Advanced-Browser-Tests).
 - Screen reader passes (VoiceOver with Safari, NVDA with Firefox) are done by hand before each release, on the cancel, error, and 3-D Secure return paths.
 
 ## Building your own wrapper

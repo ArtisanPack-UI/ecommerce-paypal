@@ -22,7 +22,7 @@ Both commands build the workbench stylesheet first (`npm run build:browser`). `c
 | Group | Tests | Needs | Runs in CI |
 | --- | --- | --- | --- |
 | `browser` (without `sandbox`) | `SavedMethodsAccountTest`, `PaymentDriversTest` | Nothing. PayPal's API is answered by `PayPalFake`, and the SDK is asked for with a client id PayPal doesn't know, so it fails to load. | Every push and pull request (`ci.yml`, `browser` job) |
-| `sandbox` | `Sandbox/CheckoutJourneysTest` | Sandbox credentials (below) | Nightly and on release branches (`sandbox.yml`) |
+| `sandbox` | `Sandbox/CheckoutJourneysTest` | Sandbox credentials (below) | On demand (`sandbox.yml`, or locally) |
 
 `SavedMethodsAccountTest` checks the account page with axe, focuses the "Remove" and "Make default" buttons and operates them with Enter, the modal included, and checks that focus lands on the list heading after a removal. `PaymentDriversTest` checks every driver's labels and its failed-load alert, and runs axe at the payment step.
 

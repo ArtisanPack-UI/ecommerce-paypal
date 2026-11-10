@@ -1,16 +1,11 @@
 name: PayPal Sandbox
 
 # The suites that talk to PayPal's real sandbox (docs/advanced/sandbox-tests.md
-# and docs/advanced/browser-tests.md): nightly on main, on every push to a
-# release branch, and on demand. Secrets live in the `paypal-sandbox`
-# environment, so pull requests never see them. Without the secrets every
-# test is skipped rather than failed.
+# and docs/advanced/browser-tests.md), on demand only. Secrets live in the
+# `paypal-sandbox` environment, so pull requests never see them. Without the
+# secrets every test is skipped rather than failed, so it isn't scheduled.
 
 on:
-  schedule:
-    - cron: '17 6 * * *'
-  push:
-    branches: ['release/**']
   workflow_dispatch:
 
 permissions:
