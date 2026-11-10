@@ -57,14 +57,14 @@ describe( 'naming and documentation', function (): void {
     } )->with( array_keys( PAYPAL_HOOKS ) );
 
     it( 'documents every hook with a payload table', function ( string $hook ): void {
-        $docs = (string) file_get_contents( dirname( __DIR__, 2 ) . '/docs/hooks.md' );
+        $docs = (string) file_get_contents( dirname( __DIR__, 2 ) . '/docs/extending/hooks-reference.md' );
 
         expect( $docs )->toContain( '`' . $hook . '`' )
             ->and( $docs )->toContain( '| # | Parameter | Type | Description |' );
     } )->with( array_keys( PAYPAL_HOOKS ) );
 
     it( 'documents the engine hooks it relies on, with examples', function (): void {
-        $docs = (string) file_get_contents( dirname( __DIR__, 2 ) . '/docs/hooks.md' );
+        $docs = (string) file_get_contents( dirname( __DIR__, 2 ) . '/docs/extending/hooks-reference.md' );
 
         expect( $docs )->toContain( '### `ap.ecommerce.payment.availableGateways`' )
             ->and( $docs )->toContain( '### `ap.ecommerce.payment.clientConfig`' )

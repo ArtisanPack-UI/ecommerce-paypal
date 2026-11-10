@@ -80,15 +80,6 @@ class OrderPayloadBuilder
     public const STOREFRONT_RETURN_ROUTE = 'artisanpack.ecommerce.storefront.checkout.return';
 
     /**
-     * The storefront route used as the cancel URL when the caller passes none.
-     *
-     * @since 1.0.0
-     *
-     * @var string
-     */
-    public const STOREFRONT_CANCEL_ROUTE = 'artisanpack.ecommerce.storefront.checkout';
-
-    /**
      * The 3-D Secure methods PayPal accepts for cards.
      *
      * @since 1.0.0
@@ -114,7 +105,8 @@ class OrderPayloadBuilder
      * - `attempt` (int|string) — makes `invoice_id` unique per checkout
      *   attempt (`cart-{id}-{attempt}`); a random suffix is used without it;
      * - `return_url`, `cancel_url` (string) — where PayPal sends the buyer
-     *   back; default to the storefront's checkout return and checkout pages;
+     *   back; both default to the storefront's checkout return page, and
+     *   `cancel_url` to `return_url` when only that is given;
      * - `payment_source` (string) — overrides the gateway's source
      *   (`paypal`, `venmo`, `card`, …);
      * - `locale` (string) — overrides the cart's / app's locale;
@@ -464,6 +456,11 @@ class OrderPayloadBuilder
     /**
      * The return and cancel URLs.
      *
+     * The cancel URL defaults to the return URL: the storefront's return
+     * route sees the unapproved Order and sends the shopper back to the
+     * payment step with "Your payment wasn't completed", where a bare
+     * checkout link would drop them at the start with no explanation.
+     *
      * @since 1.0.0
      *
      * @param  array<string, mixed>  $context  Build context.
@@ -473,7 +470,7 @@ class OrderPayloadBuilder
     protected function urls( array $context ): array
     {
         $return = isset( $context['return_url'] ) && '' !== $context['return_url'] ? (string) $context['return_url'] : self::routeUrl( self::STOREFRONT_RETURN_ROUTE );
-        $cancel = isset( $context['cancel_url'] ) && '' !== $context['cancel_url'] ? (string) $context['cancel_url'] : ( self::routeUrl( self::STOREFRONT_CANCEL_ROUTE ) ?? $return );
+        $cancel = isset( $context['cancel_url'] ) && '' !== $context['cancel_url'] ? (string) $context['cancel_url'] : $return;
 
         return array_filter( [ 'return_url' => $return, 'cancel_url' => $cancel ], static fn ( ?string $value ): bool => null !== $value );
     }

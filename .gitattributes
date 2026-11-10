@@ -16,5 +16,7 @@
 /package.json       export-ignore
 /package-lock.json  export-ignore
 /vite.config.js     export-ignore
+/vite.browser.config.js export-ignore
+/bin                export-ignore
 /node_modules       export-ignore
 /dist/*             linguist-generated

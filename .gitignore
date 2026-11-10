@@ -9,3 +9,4 @@ node_modules/
 tests/Browser/Screenshots/
 .ecommerce-verify-report.json
 verify-report.sig
+tests/Browser/workbench/public/vendor/

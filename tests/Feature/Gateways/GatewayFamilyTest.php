@@ -282,6 +282,20 @@ describe( 'client config', function (): void {
             ] );
     } );
 
+    it( 'derives the SDK locale from the app locale, falling back to en_US', function ( string $appLocale, string $sdkLocale ): void {
+        app()->setLocale( $appLocale );
+
+        $session = new PaymentSession( 'paypal', 'ORDER-1', new Money( 1000, new Currency( 'USD' ) ) );
+
+        expect( app( PayPalWalletGateway::class )->clientConfig( CartBuilder::make( [ [ 'Shirt', 1000, 1 ] ] ), $session )['options']['locale'] )->toBe( $sdkLocale );
+    } )->with( [
+        'day-1 Spanish'      => [ 'es', 'es_ES' ],
+        'day-1 French'       => [ 'fr', 'fr_FR' ],
+        'day-1 German'       => [ 'de', 'de_DE' ],
+        'regional English'   => [ 'en_GB', 'en_GB' ],
+        'unsupported locale' => [ 'xx', 'en_US' ],
+    ] );
+
     it( 'gives every gateway the same SDK components, so the SDK loads once', function (): void {
         $session    = new PaymentSession( 'paypal', 'ORDER-1', new Money( 1000, new Currency( 'USD' ) ) );
         $cart       = CartBuilder::make( [ [ 'Shirt', 1000, 1 ] ] );

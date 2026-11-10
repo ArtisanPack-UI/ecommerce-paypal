@@ -137,6 +137,17 @@
 
         const fieldState = ( state, field ) => state?.fields?.[ stateKeys[ field ] ];
 
+        // After a failure (including PayPal's 3-D Secure window closing),
+        // focus goes back to the button the shopper pressed, unless they
+        // have already moved it somewhere else on the page.
+        const restoreFocus = ( button ) => {
+            const active = document.activeElement;
+
+            if ( button && ( ! active || active === document.body || ! root.contains( active ) ) ) {
+                button.focus();
+            }
+        };
+
         $wire.on( 'payment-failed', ( event ) => {
             setProcessing( false );
 
@@ -145,6 +156,7 @@
             const savedBox = root.querySelector( '[data-paypal-saved-card-error]' );
 
             if ( savedBox && null !== savedBox.offsetParent ) {
+                restoreFocus( root.querySelector( '[data-paypal-saved-card-pay]' ) );
                 savedBox.textContent = '';
                 window.requestAnimationFrame( () => {
                     savedBox.textContent = event?.message || settings.messages.failed;
@@ -153,6 +165,7 @@
                 return;
             }
 
+            restoreFocus( submit );
             announce( errorBox, event?.message || settings.messages.failed );
         } );
 
@@ -184,6 +197,7 @@
                 await card.submit();
             } catch {
                 setProcessing( false );
+                restoreFocus( submit );
                 announce( errorBox, settings.messages.failed );
             }
         } );

@@ -56,7 +56,12 @@
 
         const focusHeading = () => document.getElementById( settings.heading )?.focus();
 
-        $wire.on( 'payment-failed', ( event ) => announce( errorBox, event?.message || settings.messages.failed ) );
+        // PayPal's window has closed, so focus would be left on the page
+        // body: move it to the step heading, then announce the error.
+        $wire.on( 'payment-failed', ( event ) => {
+            focusHeading();
+            announce( errorBox, event?.message || settings.messages.failed );
+        } );
 
         // The shopper's "save" choice replaced the Order; the SDK's
         // createOrder reads the id from the config when PayPal opens.

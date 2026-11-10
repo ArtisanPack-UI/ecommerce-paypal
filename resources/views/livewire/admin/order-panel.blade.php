@@ -17,7 +17,7 @@
             <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
                 <dt class="opacity-75">{{ __( 'Mode' ) }}</dt>
                 <dd data-paypal-panel-mode="{{ $details['mode'] }}">
-                    <x-artisanpack-badge :value="$details['live'] ? __( 'Live' ) : __( 'Sandbox' )" :class="$details['live'] ? 'badge-sm badge-success badge-soft' : 'badge-sm badge-warning badge-soft'" />
+                    <x-artisanpack-badge :value="$details['live'] ? __( 'Live' ) : __( 'Sandbox' )" :class="$details['live'] ? 'badge-sm badge-success badge-soft text-base-content!' : 'badge-sm badge-warning badge-soft text-base-content!'" />
                 </dd>
 
                 @foreach ( $details['ids'] as $id )
@@ -74,7 +74,7 @@
                     @forelse ( $details['disputes'] as $dispute )
                         <div class="flex flex-col gap-0.5" wire:key="paypal-dispute-{{ $dispute['id'] }}" data-paypal-panel-dispute="{{ $dispute['id'] }}">
                             <span>
-                                <x-artisanpack-badge :value="str_replace( '_', ' ', $dispute['status'] )" class="badge-sm badge-error badge-soft" />
+                                <x-artisanpack-badge :value="str_replace( '_', ' ', $dispute['status'] )" class="badge-sm badge-error badge-soft text-base-content!" />
                                 @if ( null !== $dispute['url'] )
                                     <a href="{{ $dispute['url'] }}" class="link font-mono" target="_blank" rel="noopener noreferrer">{{ $dispute['id'] }}<span class="sr-only"> {{ __( '(opens PayPal in a new tab)' ) }}</span></a>
                                 @else

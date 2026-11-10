@@ -58,6 +58,8 @@
                 return;
             }
 
+            // The wallet sheet has closed; keep focus on the payment step.
+            focusHeading();
             announce( errorBox, event?.message || settings.messages.failed );
         } );
 
