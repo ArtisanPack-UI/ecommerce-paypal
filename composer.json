@@ -46,7 +46,8 @@
     "laravel/pint": "^1.26",
     "orchestra/testbench": "^10.2|^11.0",
     "friendsofphp/php-cs-fixer": "^3.75",
-    "artisanpack-ui/ecommerce-storefront-livewire": "^1.0"
+    "artisanpack-ui/ecommerce-storefront-livewire": "^1.0",
+    "artisanpack-ui/ecommerce-admin-livewire": "^1.0"
   },
   "suggest": {
     "artisanpack-ui/ecommerce-storefront-livewire": "Livewire payment drivers, Pay Later messaging, and the account saved-methods page.",
@@ -61,7 +62,8 @@
     "fix": "./vendor/bin/php-cs-fixer fix",
     "cs": "./vendor/bin/phpcs",
     "cs:fix": "./vendor/bin/phpcbf",
-    "test": "./vendor/bin/pest --testsuite=Unit,Feature"
+    "test": "./vendor/bin/pest --testsuite=Unit,Feature",
+    "ecommerce:verify-satellite": "ecommerce-verify-satellite"
   },
   "config": {
     "sort-packages": false,

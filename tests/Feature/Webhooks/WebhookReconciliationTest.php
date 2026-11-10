@@ -186,8 +186,16 @@ describe( 'payment outcomes', function (): void {
     } )->with( [
         'order approved'  => [ 'CHECKOUT.ORDER.APPROVED', [ 'id' => Orders::ORDER_ID, 'status' => 'APPROVED' ], Orders::ORDER_ID ],
         'unhandled event' => [ 'BILLING.SUBSCRIPTION.CREATED', [ 'id' => 'I-123' ], null ],
-        'vault token'     => [ 'VAULT.PAYMENT-TOKEN.CREATED', [ 'id' => 'token-1' ], null ],
     ] );
+
+    it( 'queues vault token events for the vault handler, without a session reference', function (): void {
+        Queue::fake();
+
+        Webhooks::post( $this, 'VAULT.PAYMENT-TOKEN.CREATED', [ 'id' => 'token-1' ] )->assertOk();
+
+        expect( InboundWebhookDelivery::query()->sole()->session_reference )->toBeNull();
+        Queue::assertPushed( ProcessPayPalWebhook::class );
+    } );
 
     it( 'refuses deliveries posted to a sibling key', function (): void {
         Webhooks::post( $this, 'PAYMENT.CAPTURE.COMPLETED', Webhooks::capture(), 'WH-1', 'paypal-card' )

@@ -17,7 +17,9 @@ namespace ArtisanPackUI\EcommercePayPal\Payloads;
 
 use ArtisanPackUI\Ecommerce\Models\Cart;
 use ArtisanPackUI\Ecommerce\Models\CartItem;
+use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalSavedMethodException;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalGateway;
+use ArtisanPackUI\EcommercePayPal\Models\PayPalPaymentToken;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalLocale;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalMoney;
 use ArtisanPackUI\EcommercePayPal\Vault\PayPalVault;
@@ -96,6 +98,16 @@ class OrderPayloadBuilder
     public const THREE_D_SECURE_METHODS = [ 'SCA_WHEN_REQUIRED', 'SCA_ALWAYS' ];
 
     /**
+     * Filters the built Order body:
+     * `(array $payload, Cart $cart, PayPalGateway $gateway)`.
+     *
+     * @since 1.0.0
+     *
+     * @var string
+     */
+    public const ORDER_PAYLOAD_HOOK = 'ap.ecommerce.paypal.orderPayload';
+
+    /**
      * Builds the order body.
      *
      * `$context` keys:
@@ -105,7 +117,11 @@ class OrderPayloadBuilder
      *   back; default to the storefront's checkout return and checkout pages;
      * - `payment_source` (string) — overrides the gateway's source
      *   (`paypal`, `venmo`, `card`, …);
-     * - `locale` (string) — overrides the cart's / app's locale.
+     * - `locale` (string) — overrides the cart's / app's locale;
+     * - `paypal_saved_token` ({@see PayPalVault::SAVED_TOKEN_CONTEXT}) — a
+     *   saved card (local token id) of the signed-in shopper to pay with:
+     *   the card source becomes `vault_id` with customer-initiated
+     *   `stored_credential` (spec §10.2), and no card fields are needed.
      *
      * @since 1.0.0
      *
@@ -113,7 +129,8 @@ class OrderPayloadBuilder
      * @param  PayPalGateway         $gateway  Gateway the order is created for.
      * @param  array<string, mixed>  $context  See above.
      *
-     * @throws RuntimeException When the cart's totals can't be expressed in PayPal's breakdown.
+     * @throws RuntimeException           When the cart's totals can't be expressed in PayPal's breakdown.
+     * @throws PayPalSavedMethodException When the saved card isn't the shopper's to use.
      *
      * @return array<string, mixed>
      */
@@ -138,8 +155,20 @@ class OrderPayloadBuilder
             'purchase_units' => [ $purchaseUnit ],
         ];
 
+        $savedCard     = $this->savedCard( $cart, $gateway, $source, $context );
         $paymentSource = $this->paymentSource( $cart, $source, $context, $lines['requires_shipping'], isset( $purchaseUnit['shipping'] ) );
-        $attributes    = $this->attributes( $cart, $gateway, $source );
+        $attributes    = $this->attributes( $cart, $gateway, $source, null !== $savedCard );
+
+        if ( null !== $savedCard ) {
+            $paymentSource = array_merge( [
+                'vault_id'          => $savedCard->paypal_token_id,
+                'stored_credential' => [
+                    'payment_initiator' => 'CUSTOMER',
+                    'payment_type'      => 'ONE_TIME',
+                    'usage'             => 'SUBSEQUENT',
+                ],
+            ], $paymentSource ?? [] );
+        }
 
         if ( [] !== $attributes ) {
             $paymentSource               = $paymentSource ?? [];
@@ -151,7 +180,7 @@ class OrderPayloadBuilder
         }
 
         if ( function_exists( 'applyFilters' ) ) {
-            $filtered = applyFilters( 'ap.ecommerce.paypal.orderPayload', $payload, $cart, $gateway );
+            $filtered = applyFilters( self::ORDER_PAYLOAD_HOOK, $payload, $cart, $gateway );
             $payload  = is_array( $filtered ) ? $filtered : $payload;
         }
 
@@ -359,13 +388,16 @@ class OrderPayloadBuilder
      *
      * @since 1.0.0
      *
-     * @param  Cart           $cart     Cart.
-     * @param  PayPalGateway  $gateway  Gateway.
-     * @param  string         $source   Payment source.
+     * Nothing is vaulted when paying with a card that is already saved.
+     *
+     * @param  Cart           $cart       Cart.
+     * @param  PayPalGateway  $gateway    Gateway.
+     * @param  string         $source     Payment source.
+     * @param  bool           $savedCard  Whether a saved card pays.
      *
      * @return array<string, mixed>
      */
-    protected function attributes( Cart $cart, PayPalGateway $gateway, string $source ): array
+    protected function attributes( Cart $cart, PayPalGateway $gateway, string $source, bool $savedCard = false ): array
     {
         $attributes = [];
 
@@ -377,7 +409,7 @@ class OrderPayloadBuilder
 
         $vault = app( PayPalVault::class );
 
-        if ( ! $gateway->supportsSavedInstruments() || ! $vault->savesFor( $cart, $source ) ) {
+        if ( $savedCard || ! $gateway->supportsSavedInstruments() || ! $vault->savesFor( $cart, $source ) ) {
             return $attributes;
         }
 
@@ -392,6 +424,41 @@ class OrderPayloadBuilder
         }
 
         return $attributes;
+    }
+
+    /**
+     * The saved card the context asks to pay with, checked against the
+     * signed-in shopper who owns the cart ({@see PayPalVault::savedCardFor()}),
+     * or null when the context names none.
+     *
+     * @since 1.0.0
+     *
+     * @param  Cart                  $cart     Cart.
+     * @param  PayPalGateway         $gateway  Gateway.
+     * @param  string                $source   Payment source.
+     * @param  array<string, mixed>  $context  Build context.
+     *
+     * @throws PayPalSavedMethodException When the card can't be used for this cart.
+     *
+     * @return PayPalPaymentToken|null
+     */
+    protected function savedCard( Cart $cart, PayPalGateway $gateway, string $source, array $context ): ?PayPalPaymentToken
+    {
+        $tokenId = $context[ PayPalVault::SAVED_TOKEN_CONTEXT ] ?? null;
+
+        if ( null === $tokenId || '' === $tokenId ) {
+            return null;
+        }
+
+        $token = 'card' === $source && $gateway->supportsSavedInstruments() && ( is_int( $tokenId ) || is_string( $tokenId ) )
+            ? app( PayPalVault::class )->savedCardFor( $cart, $tokenId )
+            : null;
+
+        if ( null === $token ) {
+            throw PayPalSavedMethodException::unavailable();
+        }
+
+        return $token;
     }
 
     /**

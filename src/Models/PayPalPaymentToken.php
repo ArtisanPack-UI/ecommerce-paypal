@@ -119,6 +119,68 @@ class PayPalPaymentToken extends Model
     }
 
     /**
+     * What the shopper sees for this method: "Visa ending in 1111",
+     * "PayPal (ana@example.com)", or "Venmo".
+     *
+     * @since 1.0.0
+     *
+     * @return string
+     */
+    public function label(): string
+    {
+        $display = (array) ( $this->display ?? [] );
+
+        if ( 'card' === $this->type ) {
+            $brand = isset( $display['brand'] ) ? ucwords( strtolower( str_replace( '_', ' ', (string) $display['brand'] ) ) ) : __( 'Card' );
+
+            return isset( $display['last_digits'] )
+                ? __( ':brand ending in :digits', [ 'brand' => $brand, 'digits' => $display['last_digits'] ] )
+                : $brand;
+        }
+
+        $name = 'venmo' === $this->type ? __( 'Venmo' ) : __( 'PayPal' );
+
+        return isset( $display['email'] ) ? __( ':method (:email)', [ 'method' => $name, 'email' => $display['email'] ] ) : $name;
+    }
+
+    /**
+     * The card's expiry as "MM/YYYY", or null (wallets, or PayPal didn't
+     * say).
+     *
+     * @since 1.0.0
+     *
+     * @return string|null
+     */
+    public function expiry(): ?string
+    {
+        $expiry = $this->display['expiry'] ?? null;
+
+        if ( ! is_string( $expiry ) || 1 !== preg_match( '/^(\d{4})-(\d{2})$/', $expiry, $parts ) ) {
+            return null;
+        }
+
+        return $parts[2] . '/' . $parts[1];
+    }
+
+    /**
+     * Whether the card's expiry month has passed.
+     *
+     * @since 1.0.0
+     *
+     * @return bool
+     */
+    public function isExpired(): bool
+    {
+        $expiry = $this->display['expiry'] ?? null;
+
+        if ( ! is_string( $expiry ) || 1 !== preg_match( '/^\d{4}-\d{2}$/', $expiry ) ) {
+            return false;
+        }
+
+        return Carbon::createFromFormat( '!Y-m', $expiry )->endOfMonth()->isPast();
+    }
+
+    /**
      * Limits to `$mode` (`sandbox` or `live`).
      *
      * @since 1.0.0

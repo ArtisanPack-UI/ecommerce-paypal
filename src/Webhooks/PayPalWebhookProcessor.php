@@ -20,12 +20,13 @@ use ArtisanPackUI\EcommercePayPal\Jobs\ProcessPayPalWebhook;
 use ArtisanPackUI\EcommercePayPal\Webhooks\Handlers\CaptureEventHandler;
 use ArtisanPackUI\EcommercePayPal\Webhooks\Handlers\DisputeEventHandler;
 use ArtisanPackUI\EcommercePayPal\Webhooks\Handlers\RefundEventHandler;
+use ArtisanPackUI\EcommercePayPal\Webhooks\Handlers\VaultEventHandler;
 use ArtisanPackUI\EcommercePayPal\Webhooks\Handlers\WebhookEventHandler;
 
 /**
  * The side effects of PayPal events, beyond the payment outcome the engine
  * reconciles: settling pending captures, recording refunds made in PayPal,
- * and recording disputes.
+ * recording disputes, and syncing vault tokens saved or deleted in PayPal.
  *
  * It runs from {@see ProcessPayPalWebhook}, which is queued from the
  * engine's `ap.ecommerce.gateway.paypal.webhook_received` action. That
@@ -47,15 +48,17 @@ class PayPalWebhookProcessor
      * @var array<string, class-string<WebhookEventHandler>>
      */
     public const HANDLERS = [
-        'PAYMENT.CAPTURE.PENDING'   => CaptureEventHandler::class,
-        'PAYMENT.CAPTURE.COMPLETED' => CaptureEventHandler::class,
-        'PAYMENT.CAPTURE.DENIED'    => CaptureEventHandler::class,
-        'PAYMENT.CAPTURE.DECLINED'  => CaptureEventHandler::class,
-        'PAYMENT.CAPTURE.REFUNDED'  => RefundEventHandler::class,
-        'PAYMENT.CAPTURE.REVERSED'  => RefundEventHandler::class,
-        'CUSTOMER.DISPUTE.CREATED'  => DisputeEventHandler::class,
-        'CUSTOMER.DISPUTE.UPDATED'  => DisputeEventHandler::class,
-        'CUSTOMER.DISPUTE.RESOLVED' => DisputeEventHandler::class,
+        'PAYMENT.CAPTURE.PENDING'     => CaptureEventHandler::class,
+        'PAYMENT.CAPTURE.COMPLETED'   => CaptureEventHandler::class,
+        'PAYMENT.CAPTURE.DENIED'      => CaptureEventHandler::class,
+        'PAYMENT.CAPTURE.DECLINED'    => CaptureEventHandler::class,
+        'PAYMENT.CAPTURE.REFUNDED'    => RefundEventHandler::class,
+        'PAYMENT.CAPTURE.REVERSED'    => RefundEventHandler::class,
+        'CUSTOMER.DISPUTE.CREATED'    => DisputeEventHandler::class,
+        'CUSTOMER.DISPUTE.UPDATED'    => DisputeEventHandler::class,
+        'CUSTOMER.DISPUTE.RESOLVED'   => DisputeEventHandler::class,
+        'VAULT.PAYMENT-TOKEN.CREATED' => VaultEventHandler::class,
+        'VAULT.PAYMENT-TOKEN.DELETED' => VaultEventHandler::class,
     ];
 
     /**

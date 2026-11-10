@@ -20,6 +20,7 @@ use ArtisanPackUI\Ecommerce\Registries\PaymentGatewayRegistry;
 use ArtisanPackUI\Ecommerce\Services\CheckoutService;
 use ArtisanPackUI\Ecommerce\Support\ClientPaymentConfig;
 use ArtisanPackUI\Ecommerce\ValueObjects\PaymentSession;
+use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalSavedMethodException;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalGateway;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalCheckoutModule;
 use ArtisanPackUI\EcommercePayPal\Vault\PayPalVault;
@@ -135,14 +136,11 @@ abstract class PayPalPaymentDriver extends PaymentDriver
             return;
         }
 
-        $gateway = app( PaymentGatewayRegistry::class )->find( $this->gateway );
+        $gateway = $this->paypalGateway();
         $vault   = app( PayPalVault::class );
-        $cart    = '' === $this->reference ? null : Cart::query()
-            ->where( 'payment_reference', $this->reference )
-            ->whereNull( 'completed_order_id' )
-            ->first();
+        $cart    = $this->checkoutCart();
 
-        if ( ! $gateway instanceof PayPalGateway || ! $gateway->supportsSavedInstruments() || null === $cart || null === $vault->shopperFor( $cart ) ) {
+        if ( null === $gateway || ! $gateway->supportsSavedInstruments() || null === $cart || null === $vault->shopperFor( $cart ) ) {
             $this->saveMethod = ! $save;
             $this->failed( __( 'We couldn\'t update this choice. Reload the page and try again.' ) );
 
@@ -161,11 +159,6 @@ abstract class PayPalPaymentDriver extends PaymentDriver
 
             return;
         }
-
-        $config = ClientPaymentConfig::for( $gateway, $cart->refresh(), $session );
-
-        $this->reference = $session->reference;
-        $this->config    = is_array( $config ) ? $config : $this->config;
 
         $this->dispatch( 'paypal-order-changed', orderId: $session->reference )->self();
     }
@@ -234,14 +227,50 @@ abstract class PayPalPaymentDriver extends PaymentDriver
      */
     protected function replaceOrder( Cart $cart, PayPalGateway $gateway, PayPalVault $vault, bool $save ): ?PaymentSession
     {
-        $previous = $this->reference;
-
         $vault->rememberChoice( $cart, $save );
+
+        try {
+            $session = $this->replaceSession( $cart, $gateway );
+        } catch ( Throwable $exception ) {
+            report( $exception );
+
+            $session = null;
+        }
+
+        if ( null === $session ) {
+            $vault->rememberChoice( $cart->refresh(), ! $save );
+        }
+
+        return $session;
+    }
+
+    /**
+     * Replaces the cart's PayPal Order with a new one created through the
+     * checkout (`$context` is passed to the gateway), then points the
+     * driver at it. Anything that fails puts the old Order back.
+     *
+     * @since 1.0.0
+     *
+     * @param  Cart                  $cart     Cart.
+     * @param  PayPalGateway         $gateway  Gateway.
+     * @param  array<string, mixed>  $context  Extra session context.
+     *
+     * @throws PayPalSavedMethodException When a saved card in `$context` can't be used.
+     *
+     * @return PaymentSession|null The new session, or null when it couldn't be created.
+     */
+    protected function replaceSession( Cart $cart, PayPalGateway $gateway, array $context = [] ): ?PaymentSession
+    {
+        $previous = $this->reference;
 
         Cart::query()->whereKey( $cart->getKey() )->where( 'payment_reference', $previous )->update( [ 'payment_reference' => null ] );
 
         try {
-            $session = app( CheckoutService::class )->createPaymentSession( $cart->refresh(), array_filter( [ 'return_url' => $this->returnUrl() ] ) );
+            $session = app( CheckoutService::class )->createPaymentSession( $cart->refresh(), array_filter( [ 'return_url' => $this->returnUrl() ] ) + $context );
+        } catch ( PayPalSavedMethodException $exception ) {
+            $this->restoreReference( $cart, $previous );
+
+            throw $exception;
         } catch ( Throwable $exception ) {
             report( $exception );
 
@@ -249,13 +278,62 @@ abstract class PayPalPaymentDriver extends PaymentDriver
         }
 
         if ( null !== $session && $session->gatewayKey === $gateway->key() ) {
+            $config = ClientPaymentConfig::for( $gateway, $cart->refresh(), $session );
+
+            $this->reference = $session->reference;
+            $this->config    = is_array( $config ) ? $config : $this->config;
+
             return $session;
         }
 
-        Cart::query()->whereKey( $cart->getKey() )->whereNull( 'completed_order_id' )->update( [ 'payment_reference' => $previous ] );
-        $vault->rememberChoice( $cart->refresh(), ! $save );
+        $this->restoreReference( $cart, $previous );
 
         return null;
+    }
+
+    /**
+     * Puts `$reference` back as the cart's payment reference after a failed
+     * replacement.
+     *
+     * @since 1.0.0
+     *
+     * @param  Cart    $cart       Cart.
+     * @param  string  $reference  Previous reference.
+     *
+     * @return void
+     */
+    protected function restoreReference( Cart $cart, string $reference ): void
+    {
+        Cart::query()->whereKey( $cart->getKey() )->whereNull( 'completed_order_id' )->update( [ 'payment_reference' => '' === $reference ? null : $reference ] );
+    }
+
+    /**
+     * The open checkout cart this driver's Order belongs to, or null.
+     *
+     * @since 1.0.0
+     *
+     * @return Cart|null
+     */
+    protected function checkoutCart(): ?Cart
+    {
+        return '' === $this->reference ? null : Cart::query()
+            ->where( 'payment_reference', $this->reference )
+            ->whereNull( 'completed_order_id' )
+            ->first();
+    }
+
+    /**
+     * The driver's PayPal gateway, or null.
+     *
+     * @since 1.0.0
+     *
+     * @return PayPalGateway|null
+     */
+    protected function paypalGateway(): ?PayPalGateway
+    {
+        $gateway = '' === $this->gateway ? null : app( PaymentGatewayRegistry::class )->find( $this->gateway );
+
+        return $gateway instanceof PayPalGateway ? $gateway : null;
     }
 
     /**
