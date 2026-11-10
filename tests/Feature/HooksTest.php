@@ -143,6 +143,21 @@ describe( 'ap.ecommerce.paypal.captured', function (): void {
         expect( $this->captured )->toBe( [ [ $order->id, Orders::CAPTURE_ID, 'PENDING', Orders::ORDER_ID, 'paypal' ] ] );
     } );
 
+    it( 'still succeeds when a listener throws, since the money has moved', function (): void {
+        Illuminate\Support\Facades\Exceptions::fake();
+
+        addAction( PayPalGateway::CAPTURED_HOOK, function (): void {
+            throw new RuntimeException( 'Host listener broke.' );
+        } );
+
+        $result = app( PaymentGatewayRegistry::class )->get( 'paypal' )->capturePayment( Orders::create(), Orders::session() );
+
+        expect( $result->success )->toBeTrue()
+            ->and( $result->gatewayReference )->toBe( Orders::CAPTURE_ID );
+
+        Illuminate\Support\Facades\Exceptions::assertReported( RuntimeException::class );
+    } );
+
     it( 'doesn\'t fire for a declined payment', function (): void {
         $this->paypal->error( 'orders.capture', 'instrument-declined' );
 

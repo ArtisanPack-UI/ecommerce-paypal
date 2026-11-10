@@ -98,13 +98,15 @@ Returns `array<int, string>`.
 
 Fires once per order when a capture takes money (`COMPLETED`) or starts
 to (`PENDING`, settled later by webhook). A retried finalize that finds
-the same capture doesn't fire it again.
+the same capture doesn't fire it again. A capture first recorded after it
+was already refunded at PayPal reports `PARTIALLY_REFUNDED` or `REFUNDED`.
+A listener that throws is reported and never fails the capture.
 
 | # | Parameter | Type | Description |
 |---|---|---|---|
 | 1 | `$order` | `ArtisanPackUI\Ecommerce\Models\Order` | The engine order |
 | 2 | `$captureId` | `string` | PayPal capture id (the payment's gateway reference) |
-| 3 | `$status` | `string` | `COMPLETED` or `PENDING` |
+| 3 | `$status` | `string` | `COMPLETED`, `PENDING`, `PARTIALLY_REFUNDED`, or `REFUNDED` |
 | 4 | `$paypalOrder` | `ArtisanPackUI\EcommercePayPal\Api\Data\PayPalOrder` | The PayPal Order as captured |
 | 5 | `$gateway` | `ArtisanPackUI\EcommercePayPal\Gateways\PayPalGateway` | The gateway that captured it |
 
@@ -176,7 +178,8 @@ PayPal before acting on it, as this package's handlers do.
 
 The engine filters the gateways offered for a cart. This package uses it
 to hide a PayPal method that is switched off, or that doesn't accept the
-cart's currency or country (spec §6.2). Hosts can use it too.
+cart's currency (spec §6.2). Buyer-country eligibility is decided by the
+PayPal JS SDK in the browser. Hosts can use the filter too.
 
 | # | Parameter | Type | Description |
 |---|---|---|---|

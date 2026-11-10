@@ -1306,7 +1306,8 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
      * The first time a capture is recorded on the order, the saved card
      * that paid (if any) gets its `last_used_at` updated and
      * `ap.ecommerce.paypal.captured` fires; an idempotent retry that finds
-     * the same capture does neither again.
+     * the same capture does neither again. A listener that throws is
+     * reported and never turns the capture into a failure.
      *
      * @since 1.0.0
      *
@@ -1329,7 +1330,12 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
             if ( ! $alreadyRecorded ) {
                 $this->recordSavedCardUse( $paypalOrder );
 
-                doAction( self::CAPTURED_HOOK, $order, $capture->id(), $status, $paypalOrder, $this );
+                // The money has moved: a host listener must not fail the capture.
+                try {
+                    doAction( self::CAPTURED_HOOK, $order, $capture->id(), $status, $paypalOrder, $this );
+                } catch ( Throwable $exception ) {
+                    report( $exception );
+                }
             }
 
             return PaymentResult::success( $this->capturedAmount( $capture, $session ), $capture->id() );
