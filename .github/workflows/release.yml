@@ -93,11 +93,10 @@ jobs:
           XDEBUG_MODE: off
         run: vendor/bin/pest --testsuite=Unit,Feature --no-coverage
 
-  # The engine's satellite contract verification. On a tag it signs the
-  # report on a separate runner when ECOMMERCE_VERIFY_SIGNING_KEY is set;
-  # the release job attaches it. Until the gateway family lands (#5) the
-  # package registers no engine contract implementations: --allow-empty.
-  # Drop the flag in #26.
+  # The engine's satellite contract verification of all four gateways. On a
+  # tag it signs the report on a separate runner when
+  # ECOMMERCE_VERIFY_SIGNING_KEY (the org key) is set; the release job
+  # attaches the report and its signature.
   verify:
     needs: preflight
     # Pinned to an engine release tag: this job hands the workflow the
@@ -107,7 +106,6 @@ jobs:
       contents: read
     with:
       php-version: '8.4'
-      extra-args: '--allow-empty'
     secrets:
       ECOMMERCE_VERIFY_SIGNING_KEY: ${{ secrets.ECOMMERCE_VERIFY_SIGNING_KEY }}
 

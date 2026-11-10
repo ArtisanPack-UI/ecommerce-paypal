@@ -318,14 +318,12 @@ describe( 'client config', function (): void {
     } );
 
     it( 'lets a filter add options but not swap the Order or client id', function (): void {
-        addFilter( 'ap.ecommerce.paypal.clientConfig', function ( array $config ): array {
-            $config['options']['user_id_token'] = 'id-token';
-            $config['options']['order_id']      = 'OTHER-ORDER';
-            $config['options']['amount']        = '0.01';
-            $config['client_secret']            = 'OTHER-ORDER';
-            $config['publishable_key']          = 'other-client';
+        addFilter( 'ap.ecommerce.paypal.clientOptions', function ( array $options ): array {
+            $options['user_id_token'] = 'id-token';
+            $options['order_id']      = 'OTHER-ORDER';
+            $options['amount']        = '0.01';
 
-            return $config;
+            return $options;
         } );
 
         $session = new PaymentSession( 'paypal', 'ORDER-1', new Money( 1000, new Currency( 'USD' ) ) );

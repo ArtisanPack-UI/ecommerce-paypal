@@ -3,9 +3,10 @@
 # release workflow runs it instead, signs the report, and attaches it to the
 # release.
 #
-# Until the gateway family lands (#5) the package registers no engine
-# contract implementations, so it verifies with --allow-empty. Drop the flag
-# in #26, which verifies all four gateways.
+# All four gateways (paypal, paypal-card, paypal-apple-pay,
+# paypal-google-pay) must pass the engine's PaymentGatewayContractTest
+# (tests/Feature/Contracts); testbench.yaml enables PayPal with placeholder
+# credentials so discovery finds them.
 name: Verify satellite
 
 on:
@@ -22,4 +23,3 @@ jobs:
       contents: read
     with:
       php-version: '8.4'
-      extra-args: '--allow-empty'

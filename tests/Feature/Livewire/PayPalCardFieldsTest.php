@@ -90,7 +90,7 @@ describe( 'rendering', function (): void {
         $component = Livewire::test( PayPalCardFields::class, cardFieldsProps() );
         $html      = $component->html();
 
-        expect( array_keys( $component->instance()->all() ) )->toEqualCanonicalizing( [ 'config', 'gateway', 'gatewayLabel', 'reference', 'token', 'saveMethod' ] )
+        expect( array_keys( $component->instance()->all() ) )->toEqualCanonicalizing( [ 'config', 'gateway', 'gatewayLabel', 'reference', 'token', 'saveMethod', 'savedCard', 'payingWithSaved' ] )
             ->and( $html )->not->toContain( 'wire:model="number' )
             ->and( preg_match( '/<input[^>]*(number|cvv|cvc|expiry|card)/i', $html ) )->toBe( 0 );
 

@@ -31,6 +31,8 @@ use ArtisanPackUI\EcommercePayPal\Api\Data\PayPalOrder;
 use ArtisanPackUI\EcommercePayPal\Api\Data\PayPalRefund;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalClient;
 use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalApiException;
+use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalSavedMethodException;
+use ArtisanPackUI\EcommercePayPal\Models\PayPalPaymentToken;
 use ArtisanPackUI\EcommercePayPal\Payloads\OrderPayloadBuilder;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalCurrencies;
 use ArtisanPackUI\EcommercePayPal\Support\PayPalDeclines;
@@ -84,6 +86,26 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
      * @var int
      */
     public const AUTHORIZATION_VALIDITY_DAYS = 29;
+
+    /**
+     * Fired once per order when a capture takes (or starts taking) money:
+     * `(Order $order, string $captureId, string $status, PayPalOrder $paypalOrder, PayPalGateway $gateway)`.
+     *
+     * @since 1.0.0
+     *
+     * @var string
+     */
+    public const CAPTURED_HOOK = 'ap.ecommerce.paypal.captured';
+
+    /**
+     * Filters the client config's `options`:
+     * `(array $options, Cart $cart, PaymentSession $session, PayPalGateway $gateway)`.
+     *
+     * @since 1.0.0
+     *
+     * @var string
+     */
+    public const CLIENT_OPTIONS_HOOK = 'ap.ecommerce.paypal.clientOptions';
 
     /**
      * Creates the gateway.
@@ -262,21 +284,42 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
      * @param  Cart                  $cart     Cart.
      * @param  array<string, mixed>  $context  `idempotency_key`, plus the payload builder's context.
      *
-     * @throws PayPalApiException       When PayPal refuses or can't be reached.
-     * @throws UnexpectedValueException When PayPal's answer has no id or amount.
+     * With a saved card in the context ({@see PayPalVault::SAVED_TOKEN_CONTEXT}),
+     * the Order pays with its `vault_id` (spec §10.2). A token PayPal
+     * reports invalid is soft-deleted and the shopper told to pick again.
+     *
+     * @throws PayPalApiException         When PayPal refuses or can't be reached.
+     * @throws PayPalSavedMethodException When the saved card can't be used (or PayPal rejected it).
+     * @throws UnexpectedValueException   When PayPal's answer has no id or amount.
      *
      * @return PaymentSession
      */
     public function createPaymentSession( Cart $cart, array $context = [] ): PaymentSession
     {
+        $vault     = app( PayPalVault::class );
         $payload   = $this->payloads->build( $cart, $this, $context );
+        $savedCard = $this->savedCardIn( $cart, $payload, $context );
         $keyed     = isset( $context['idempotency_key'] ) && '' !== trim( (string) $context['idempotency_key'] );
-        $requestId = $keyed ? (string) $context['idempotency_key'] : $this->cartRequestId( $cart );
+        $requestId = $keyed ? (string) $context['idempotency_key'] : $this->cartRequestId( $cart, null === $savedCard ? '' : 'saved-' . $savedCard->getKey() );
 
-        $order = $this->client->orders()->create( $payload, $requestId );
+        try {
+            $order = $this->client->orders()->create( $payload, $requestId );
+        } catch ( PayPalApiException $exception ) {
+            if ( null !== $savedCard && PayPalVault::rejectsToken( $exception ) ) {
+                $vault->forget( $savedCard );
+
+                throw PayPalSavedMethodException::invalid( $savedCard, $exception );
+            }
+
+            throw $exception;
+        }
 
         if ( '' === $order->id() ) {
             throw new UnexpectedValueException( 'PayPal created an order without an id.' );
+        }
+
+        if ( $vault->enabled() ) {
+            $vault->rememberSavedCard( $cart, $savedCard, $order->id() );
         }
 
         if ( ! $keyed ) {
@@ -552,9 +595,10 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
      * Order), plus the driver's own options
      * ({@see self::driverOptions()}). `components` is the same for every
      * gateway in the family, so a checkout page that renders several of them
-     * loads the SDK once. The result passes through
-     * `ap.ecommerce.paypal.clientConfig` `(array $config, Cart $cart,
-     * PaymentSession $session, PayPalGateway $gateway)`.
+     * loads the SDK once. The options pass through
+     * `ap.ecommerce.paypal.clientOptions` `(array $options, Cart $cart,
+     * PaymentSession $session, PayPalGateway $gateway)`; the engine's
+     * `ap.ecommerce.payment.clientConfig` filter then sees the whole config.
      *
      * For gateways that vault (spec §10.2), `options.vault` tells the driver
      * whether to offer "save" (`available`) and what the shopper chose
@@ -586,28 +630,24 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
 
         $config['options'] = array_merge( $config['options'], $this->vaultOptions( $cart, (bool) $config['options']['restart'] ) );
 
-        $filtered = applyFilters( 'ap.ecommerce.paypal.clientConfig', $config, $cart, $session, $this );
+        $filtered = applyFilters( self::CLIENT_OPTIONS_HOOK, $config['options'], $cart, $session, $this );
 
-        if ( ! is_array( $filtered ) || ! is_array( $filtered['options'] ?? null ) ) {
+        if ( ! is_array( $filtered ) ) {
             return $config;
         }
 
-        // The filter may add options (a user id token), never swap the
-        // driver, the Order, or the client id out from under the checkout.
-        $locked = array_merge( $filtered, [
-            'driver'          => $config['driver'],
-            'flow'            => $config['flow'],
-            'publishable_key' => $config['publishable_key'],
-            'client_secret'   => $config['client_secret'],
-        ] );
-
-        // The SDK reads the Order, amount, currency, and intent from
-        // `options`, so those stay the session's too.
+        // The filter may add or change options (button style, a user id
+        // token), never swap the Order out from under the checkout: the SDK
+        // reads the Order, amount, currency, and intent from `options`, so
+        // those stay the session's. The driver, client id, and Order id
+        // outside `options` aren't passed to the filter at all.
         foreach ( [ 'order_id', 'amount', 'currency', 'intent' ] as $key ) {
-            $locked['options'][ $key ] = $config['options'][ $key ];
+            $filtered[ $key ] = $config['options'][ $key ];
         }
 
-        return $locked;
+        $config['options'] = $filtered;
+
+        return $config;
     }
 
     /**
@@ -971,22 +1011,48 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
     }
 
     /**
+     * The saved card the built payload pays with, or null.
+     *
+     * @since 1.0.0
+     *
+     * @param  Cart                  $cart     Cart.
+     * @param  array<string, mixed>  $payload  Built Order body.
+     * @param  array<string, mixed>  $context  Session context.
+     *
+     * @return PayPalPaymentToken|null
+     */
+    protected function savedCardIn( Cart $cart, array $payload, array $context ): ?PayPalPaymentToken
+    {
+        $tokenId = $context[ PayPalVault::SAVED_TOKEN_CONTEXT ] ?? null;
+
+        if ( ! isset( $payload['payment_source']['card']['vault_id'] ) || ( ! is_int( $tokenId ) && ! is_string( $tokenId ) ) ) {
+            return null;
+        }
+
+        $token = app( PayPalVault::class )->savedCardFor( $cart, $tokenId );
+
+        return null !== $token && $token->paypal_token_id === $payload['payment_source']['card']['vault_id'] ? $token : null;
+    }
+
+    /**
      * The `PayPal-Request-Id` for creating an Order when the engine passed
      * no idempotency key: a UUID kept on `cart.meta.paypal`.
      *
      * The id is reused while the cart's gateway, currency, total, and the
-     * shopper's "save" choice are unchanged and the engine hasn't stored the
+     * shopper's "save" choice (and saved card, `$variant`) are unchanged
+     * and the engine hasn't stored the
      * Order it produced (a retry after a crash). Once that Order is the
      * cart's payment reference, a new create means the engine judged it
      * unusable, so a new id is minted.
      *
      * @since 1.0.0
      *
-     * @param  Cart  $cart  Cart.
+     * @param  Cart    $cart     Cart.
+     * @param  string  $variant  What else makes the Order different (the saved card paying).
      *
      * @return string
      */
-    protected function cartRequestId( Cart $cart ): string
+    protected function cartRequestId( Cart $cart, string $variant = '' ): string
     {
         $meta        = (array) ( $cart->getAttribute( 'meta' ) ?? [] );
         $paypal      = is_array( $meta['paypal'] ?? null ) ? $meta['paypal'] : [];
@@ -995,6 +1061,7 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
             strtoupper( (string) ( $cart->getAttribute( 'currency' ) ?: $cart->getAttribute( 'total_currency' ) ?: '' ) ),
             (string) ( $cart->getAttribute( 'total_amount' ) ?? '' ),
             app( PayPalVault::class )->wantsToSave( $cart ) ? 'save' : '',
+            $variant,
         ] ) );
         $stored      = isset( $paypal['request_id'] ) && is_string( $paypal['request_id'] ) ? $paypal['request_id'] : '';
         $usedBy      = isset( $paypal['request_order_id'] ) ? (string) $paypal['request_order_id'] : '';
@@ -1236,6 +1303,12 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
      * `PENDING` succeed, the capture id being the gateway reference;
      * `DECLINED` and `FAILED` are terminal.
      *
+     * The first time a capture is recorded on the order, the saved card
+     * that paid (if any) gets its `last_used_at` updated and
+     * `ap.ecommerce.paypal.captured` fires; an idempotent retry that finds
+     * the same capture does neither again. A listener that throws is
+     * reported and never turns the capture into a failure.
+     *
      * @since 1.0.0
      *
      * @param  Order           $order        Engine order.
@@ -1247,11 +1320,24 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
      */
     protected function resultFromCapture( Order $order, PayPalOrder $paypalOrder, PayPalCapture $capture, PaymentSession $session ): PaymentResult
     {
+        $alreadyRecorded = PayPalOrderMeta::describes( $order, $paypalOrder->id() ) && $capture->id() === PayPalOrderMeta::get( $order, 'capture_id' );
+
         $this->recordPayment( $order, $paypalOrder, $capture );
 
         $status = (string) $capture->status();
 
         if ( in_array( $status, [ 'COMPLETED', 'PARTIALLY_REFUNDED', 'REFUNDED', 'PENDING' ], true ) ) {
+            if ( ! $alreadyRecorded ) {
+                $this->recordSavedCardUse( $paypalOrder );
+
+                // The money has moved: a host listener must not fail the capture.
+                try {
+                    doAction( self::CAPTURED_HOOK, $order, $capture->id(), $status, $paypalOrder, $this );
+                } catch ( Throwable $exception ) {
+                    report( $exception );
+                }
+            }
+
             return PaymentResult::success( $this->capturedAmount( $capture, $session ), $capture->id() );
         }
 
@@ -1260,6 +1346,25 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
         }
 
         return PaymentResult::retryableFailure( $session->amount, 'capture_' . strtolower( '' === $status ? 'unknown' : $status ), __( 'PayPal is still processing this payment. Try again in a moment.' ) );
+    }
+
+    /**
+     * Updates the saved card's `last_used_at` after a successful payment,
+     * never failing the payment over it.
+     *
+     * @since 1.0.0
+     *
+     * @param  PayPalOrder  $paypalOrder  PayPal Order.
+     *
+     * @return void
+     */
+    protected function recordSavedCardUse( PayPalOrder $paypalOrder ): void
+    {
+        try {
+            app( PayPalVault::class )->recordSavedCardUse( $paypalOrder );
+        } catch ( Throwable $exception ) {
+            report( $exception );
+        }
     }
 
     /**

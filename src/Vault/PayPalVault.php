@@ -22,10 +22,12 @@ use ArtisanPackUI\EcommercePayPal\Api\Data\PayPalOrder;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalClient;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalCredentials;
 use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalApiException;
+use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalSavedMethodException;
 use ArtisanPackUI\EcommercePayPal\Jobs\DeletePayPalVaultTokens;
 use ArtisanPackUI\EcommercePayPal\Models\PayPalCustomer;
 use ArtisanPackUI\EcommercePayPal\Models\PayPalPaymentToken;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -63,6 +65,54 @@ class PayPalVault
      * @var array<int, string>
      */
     public const VAULTABLE_SOURCES = [ 'paypal', 'card', 'venmo' ];
+
+    /**
+     * The payment-session context key naming the saved card (a local
+     * {@see PayPalPaymentToken} id) the shopper chose to pay with
+     * (spec §10.2).
+     *
+     * @since 1.0.0
+     *
+     * @var string
+     */
+    public const SAVED_TOKEN_CONTEXT = 'paypal_saved_token';
+
+    /**
+     * The `cart.meta.paypal` key recording which saved card paid for which
+     * PayPal Order, so the card's `last_used_at` can be updated once the
+     * payment succeeds.
+     *
+     * @since 1.0.0
+     *
+     * @var string
+     */
+    public const SAVED_TOKEN_META = 'saved_token';
+
+    /**
+     * PayPal error issues that always mean a vaulted token can no longer be
+     * used.
+     *
+     * @since 1.0.0
+     *
+     * @var array<int, string>
+     */
+    public const INVALID_TOKEN_ISSUES = [
+        'TOKEN_ID_NOT_FOUND',
+        'PAYMENT_SOURCE_CANNOT_BE_USED',
+    ];
+
+    /**
+     * Generic "not found" issues, which only mean the token is invalid when
+     * PayPal points them at `vault_id`.
+     *
+     * @since 1.0.0
+     *
+     * @var array<int, string>
+     */
+    public const MISSING_RESOURCE_ISSUES = [
+        'INVALID_RESOURCE_ID',
+        'RESOURCE_NOT_FOUND',
+    ];
 
     /**
      * Creates the service.
@@ -288,14 +338,15 @@ class PayPalVault
      * @param  string                 $type              `paypal`, `card`, or `venmo`.
      * @param  array<string, string>  $display           Display data ({@see self::display()}).
      * @param  string|null            $paypalCustomerId  PayPal customer id.
+     * @param  bool                   $used              Whether it was just used to pay (sets `last_used_at`).
      *
      * @return PayPalPaymentToken
      */
-    public function save( int $customerId, string $tokenId, string $gatewayKey, string $type, array $display, ?string $paypalCustomerId = null ): PayPalPaymentToken
+    public function save( int $customerId, string $tokenId, string $gatewayKey, string $type, array $display, ?string $paypalCustomerId = null, bool $used = true ): PayPalPaymentToken
     {
         $mode = $this->mode();
 
-        return DB::transaction( function () use ( $customerId, $tokenId, $gatewayKey, $type, $display, $paypalCustomerId, $mode ): PayPalPaymentToken {
+        return DB::transaction( function () use ( $customerId, $tokenId, $gatewayKey, $type, $display, $paypalCustomerId, $mode, $used ): PayPalPaymentToken {
             if ( null !== $paypalCustomerId ) {
                 PayPalCustomer::query()->updateOrCreate(
                     [ 'customer_id' => $customerId, 'mode' => $mode ],
@@ -310,12 +361,16 @@ class PayPalVault
                 ->first() ?? new PayPalPaymentToken( [ 'paypal_token_id' => $tokenId, 'mode' => $mode ] );
 
             $token->fill( [
-                'customer_id'  => $customerId,
-                'gateway_key'  => $gatewayKey,
-                'type'         => $type,
-                'display'      => [] === $display ? null : $display,
-                'last_used_at' => Carbon::now(),
+                'customer_id' => $customerId,
+                'gateway_key' => $gatewayKey,
+                'type'        => $type,
+                'display'     => [] === $display ? null : $display,
             ] );
+
+            if ( $used ) {
+                $token->last_used_at = Carbon::now();
+            }
+
             $token->deleted_at = null;
             $token->is_default = $token->is_default || ! $this->hasDefault( $customerId, $mode, $token->getKey() );
             $token->save();
@@ -364,6 +419,262 @@ class PayPalVault
     public function defaultFor( int $customerId ): ?PayPalPaymentToken
     {
         return PayPalPaymentToken::query()->forCustomer( $customerId )->forMode( $this->mode() )->where( 'is_default', true )->first();
+    }
+
+    /**
+     * The customer's saved cards in the current mode: the default first,
+     * then the most recently used.
+     *
+     * @since 1.0.0
+     *
+     * @param  int  $customerId  Engine customer id.
+     *
+     * @return Collection<int, PayPalPaymentToken>
+     */
+    public function savedCardsFor( int $customerId ): Collection
+    {
+        return $this->tokensFor( $customerId )->filter( static fn ( PayPalPaymentToken $token ): bool => 'card' === $token->type )->values();
+    }
+
+    /**
+     * Every saved payment method of the customer in the current mode: the
+     * default first, then the most recently used.
+     *
+     * @since 1.0.0
+     *
+     * @param  int  $customerId  Engine customer id.
+     *
+     * @return Collection<int, PayPalPaymentToken>
+     */
+    public function tokensFor( int $customerId ): Collection
+    {
+        return PayPalPaymentToken::query()
+            ->forCustomer( $customerId )
+            ->forMode( $this->mode() )
+            ->orderByDesc( 'is_default' )
+            ->orderByRaw( 'last_used_at IS NULL' )
+            ->orderByDesc( 'last_used_at' )
+            ->orderByDesc( 'id' )
+            ->get();
+    }
+
+    /**
+     * One of the customer's own tokens in the current mode, or null. Every
+     * lookup by id goes through here (or {@see self::savedCardFor()}), so a
+     * customer can never reach another customer's token.
+     *
+     * @since 1.0.0
+     *
+     * @param  int         $customerId  Engine customer id.
+     * @param  int|string  $tokenId     Local token id.
+     *
+     * @return PayPalPaymentToken|null
+     */
+    public function tokenFor( int $customerId, int|string $tokenId ): ?PayPalPaymentToken
+    {
+        if ( ! is_numeric( $tokenId ) || (int) $tokenId < 1 ) {
+            return null;
+        }
+
+        return PayPalPaymentToken::query()
+            ->forCustomer( $customerId )
+            ->forMode( $this->mode() )
+            ->whereKey( (int) $tokenId )
+            ->first();
+    }
+
+    /**
+     * The saved card `$tokenId` when the signed-in shopper who owns `$cart`
+     * may pay for it with that card (vaulting on, their own card, this
+     * mode, not deleted), or null.
+     *
+     * @since 1.0.0
+     *
+     * @param  Cart        $cart     Cart.
+     * @param  int|string  $tokenId  Local token id.
+     *
+     * @return PayPalPaymentToken|null
+     */
+    public function savedCardFor( Cart $cart, int|string $tokenId ): ?PayPalPaymentToken
+    {
+        $shopper = $this->shopperFor( $cart );
+        $token   = null === $shopper ? null : $this->tokenFor( (int) $shopper->getKey(), $tokenId );
+
+        return null !== $token && 'card' === $token->type ? $token : null;
+    }
+
+    /**
+     * Records on `cart.meta.paypal` that `$token` pays for PayPal Order
+     * `$paypalOrderId`, or clears the record when `$token` is null.
+     *
+     * @since 1.0.0
+     *
+     * @param  Cart                     $cart           Cart.
+     * @param  PayPalPaymentToken|null  $token          Saved card, or null.
+     * @param  string                   $paypalOrderId  PayPal Order id.
+     *
+     * @return void
+     */
+    public function rememberSavedCard( Cart $cart, ?PayPalPaymentToken $token, string $paypalOrderId = '' ): void
+    {
+        $meta   = (array) ( $cart->getAttribute( 'meta' ) ?? [] );
+        $paypal = is_array( $meta['paypal'] ?? null ) ? $meta['paypal'] : [];
+
+        if ( null === $token ) {
+            if ( ! array_key_exists( self::SAVED_TOKEN_META, $paypal ) ) {
+                return;
+            }
+
+            unset( $paypal[ self::SAVED_TOKEN_META ] );
+        } else {
+            $paypal[ self::SAVED_TOKEN_META ] = [ 'id' => (int) $token->getKey(), 'order_id' => $paypalOrderId ];
+        }
+
+        $meta['paypal'] = $paypal;
+
+        $cart->setAttribute( 'meta', $meta );
+
+        if ( $cart->exists ) {
+            $cart->save();
+        }
+    }
+
+    /**
+     * Updates `last_used_at` of the saved card that paid for
+     * `$paypalOrder`, when one did (spec §10.2).
+     *
+     * @since 1.0.0
+     *
+     * @param  PayPalOrder  $paypalOrder  The PayPal Order that was paid.
+     *
+     * @return PayPalPaymentToken|null The card, when one was used.
+     */
+    public function recordSavedCardUse( PayPalOrder $paypalOrder ): ?PayPalPaymentToken
+    {
+        if ( '' === $paypalOrder->id() ) {
+            return null;
+        }
+
+        $cart  = Cart::query()->where( 'payment_reference', $paypalOrder->id() )->first();
+        $meta  = (array) ( $cart?->getAttribute( 'meta' ) ?? [] );
+        $saved = $meta['paypal'][ self::SAVED_TOKEN_META ] ?? null;
+
+        if ( ! is_array( $saved ) || ( $saved['order_id'] ?? null ) !== $paypalOrder->id() || ! is_numeric( $saved['id'] ?? null ) ) {
+            return null;
+        }
+
+        $token = PayPalPaymentToken::query()->whereKey( (int) $saved['id'] )->where( 'customer_id', (int) $cart->customer_id )->first();
+
+        $token?->forceFill( [ 'last_used_at' => Carbon::now() ] )->save();
+
+        return $token;
+    }
+
+    /**
+     * Whether `$exception` means PayPal no longer accepts the vaulted token
+     * the request used.
+     *
+     * @since 1.0.0
+     *
+     * @param  PayPalApiException  $exception  PayPal error.
+     *
+     * @return bool
+     */
+    public static function rejectsToken( PayPalApiException $exception ): bool
+    {
+        foreach ( $exception->details as $detail ) {
+            $issue = is_array( $detail ) ? ( $detail['issue'] ?? null ) : null;
+
+            if ( in_array( $issue, self::INVALID_TOKEN_ISSUES, true ) ) {
+                return true;
+            }
+
+            // A missing resource is only the token when PayPal says so: any
+            // other 404 or invalid id must never delete a shopper's card.
+            if ( in_array( $issue, self::MISSING_RESOURCE_ISSUES, true ) && str_contains( (string) ( $detail['field'] ?? '' ), 'vault_id' ) ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Soft-deletes a token locally (PayPal reported it invalid or deleted
+     * it, or the shopper removed it). When it was the default, the
+     * customer's most recently used remaining method becomes the default.
+     *
+     * @since 1.0.0
+     *
+     * @param  PayPalPaymentToken  $token  Token.
+     *
+     * @return void
+     */
+    public function forget( PayPalPaymentToken $token ): void
+    {
+        DB::transaction( function () use ( $token ): void {
+            $wasDefault = (bool) $token->is_default;
+
+            $token->forceFill( [ 'is_default' => false ] )->save();
+            $token->delete();
+
+            if ( ! $wasDefault ) {
+                return;
+            }
+
+            $next = PayPalPaymentToken::query()
+                ->forCustomer( $token->customer_id )
+                ->forMode( $token->mode )
+                ->orderByRaw( 'last_used_at IS NULL' )
+                ->orderByDesc( 'last_used_at' )
+                ->orderByDesc( 'id' )
+                ->first();
+
+            if ( null !== $next ) {
+                $this->makeDefault( $next );
+            }
+        } );
+    }
+
+    /**
+     * Forgets the token a {@see PayPalSavedMethodException} names, if it is
+     * still stored: the removal the gateway made is lost when the payment
+     * session ran inside a transaction that rolled back with the exception.
+     *
+     * @since 1.0.0
+     *
+     * @param  PayPalSavedMethodException  $exception  Exception.
+     *
+     * @return void
+     */
+    public function forgetRejected( PayPalSavedMethodException $exception ): void
+    {
+        $token = null === $exception->token ? null : PayPalPaymentToken::query()->whereKey( $exception->token->getKey() )->first();
+
+        if ( null !== $token ) {
+            $this->forget( $token );
+        }
+    }
+
+    /**
+     * Deletes `$token` at PayPal, then locally (spec §10.3). A token PayPal
+     * no longer has counts as deleted there.
+     *
+     * @since 1.0.0
+     *
+     * @param  PayPalPaymentToken  $token  Token.
+     *
+     * @throws PayPalApiException When PayPal refuses or can't be reached; the local row is kept.
+     *
+     * @return void
+     */
+    public function remove( PayPalPaymentToken $token ): void
+    {
+        if ( $token->mode === $this->mode() ) {
+            $this->deleteAtPayPal( [ $token->paypal_token_id ] );
+        }
+
+        $this->forget( $token );
     }
 
     /**
@@ -515,7 +826,7 @@ class PayPalVault
             ->forCustomer( $customerId )
             ->forMode( $mode )
             ->where( 'is_default', true )
-            ->when( null !== $except, static fn ( $query ) => $query->whereKeyNot( $except ) )
+            ->when( null !== $except, static fn ( $query) => $query->whereKeyNot( $except ) )
             ->exists();
     }
 }

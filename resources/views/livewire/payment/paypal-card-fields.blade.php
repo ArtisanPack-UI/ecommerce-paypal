@@ -5,6 +5,10 @@
     never reaches Livewire. Each field has a visible label (the iframe is
     named by `aria-labelledby` on its group) and an inline error.
 
+    A signed-in shopper's saved cards are listed above the fields with "Use
+    a new card". While a saved card is chosen the fields stay mounted but
+    hidden, so switching back doesn't reload PayPal.
+
     @package    ArtisanPack_UI
     @subpackage EcommercePayPal
 
@@ -12,6 +16,38 @@
 --}}
 <div class="flex flex-col gap-3" data-payment-driver="paypal-card-fields">
     @if ( $available )
+        @if ( [] !== $savedCards )
+            <div class="flex flex-col gap-3" data-paypal-saved-cards>
+                <x-artisanpack-radio
+                    id="paypal-saved-card-{{ $this->getId() }}"
+                    :label="__( 'Pay with' )"
+                    :options="$savedCards"
+                    wire:model.live="savedCard"
+                    wire:loading.attr="disabled"
+                    wire:target="savedCard, payWithSavedCard"
+                    data-paypal-saved-card-choice
+                />
+
+                @if ( $usingSaved )
+                    <x-artisanpack-button
+                        type="button"
+                        color="primary"
+                        class="w-full"
+                        wire:click="payWithSavedCard"
+                        wire:loading.attr="disabled"
+                        wire:target="savedCard, payWithSavedCard"
+                        spinner="payWithSavedCard"
+                        data-paypal-saved-card-pay
+                    >
+                        {{ __( 'Pay with this card' ) }}
+                    </x-artisanpack-button>
+
+                    <p class="text-sm text-[color-mix(in_oklab,var(--color-error)_55%,var(--color-base-content))] empty:hidden" role="alert" aria-live="assertive" data-paypal-saved-card-error wire:ignore></p>
+                @endif
+            </div>
+        @endif
+
+        <div @class( [ 'hidden' => $usingSaved ] ) data-paypal-new-card>
         <div wire:ignore class="flex flex-col gap-3">
             <p class="text-sm text-base-content/70" data-paypal-loading>{{ __( 'Loading the card form…' ) }}</p>
 
@@ -41,8 +77,9 @@
 
             <p class="text-xs text-base-content/70">{{ __( 'Your card details go straight to PayPal. This store never sees them.' ) }}</p>
         </div>
+        </div>
 
-        @if ( $canSave )
+        @if ( $canSave && ! $usingSaved )
             @include( 'ecommerce-paypal::livewire.payment.partials.save-method', [ 'label' => __( 'Save this card for faster checkout' ), 'hint' => __( 'PayPal keeps the card. This store only keeps its brand and last four digits.' ) ] )
         @endif
     @else
@@ -102,6 +139,20 @@
 
         $wire.on( 'payment-failed', ( event ) => {
             setProcessing( false );
+
+            // A saved-card failure is announced next to its button; the
+            // fields' own region is hidden while a saved card is chosen.
+            const savedBox = root.querySelector( '[data-paypal-saved-card-error]' );
+
+            if ( savedBox && null !== savedBox.offsetParent ) {
+                savedBox.textContent = '';
+                window.requestAnimationFrame( () => {
+                    savedBox.textContent = event?.message || settings.messages.failed;
+                } );
+
+                return;
+            }
+
             announce( errorBox, event?.message || settings.messages.failed );
         } );
 

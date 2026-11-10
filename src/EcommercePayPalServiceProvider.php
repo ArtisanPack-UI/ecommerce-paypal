@@ -17,11 +17,13 @@ namespace ArtisanPackUI\EcommercePayPal;
 
 use ArtisanPackUI\Ecommerce\Models\Cart;
 use ArtisanPackUI\Ecommerce\Models\Customer;
+use ArtisanPackUI\Ecommerce\Registries\AccountMenuRegistry;
 use ArtisanPackUI\Ecommerce\Registries\PaymentGatewayRegistry;
 use ArtisanPackUI\Ecommerce\Registries\SatelliteRegistry;
 use ArtisanPackUI\Ecommerce\Registries\SettingsRegistry;
 use ArtisanPackUI\Ecommerce\Settings\SettingsRepository;
 use ArtisanPackUI\Ecommerce\ValueObjects\WebhookResult;
+use ArtisanPackUI\EcommerceAdminLivewire\Registries\OrderPanelRegistry;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalClient;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalCredentials;
 use ArtisanPackUI\EcommercePayPal\Api\PayPalTokenProvider;
@@ -35,6 +37,8 @@ use ArtisanPackUI\EcommercePayPal\Gateways\PayPalGateway;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalGooglePayGateway;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalWalletGateway;
 use ArtisanPackUI\EcommercePayPal\Jobs\ProcessPayPalWebhook;
+use ArtisanPackUI\EcommercePayPal\Livewire\Account\SavedPaymentMethods;
+use ArtisanPackUI\EcommercePayPal\Livewire\Admin\PayPalOrderPanel;
 use ArtisanPackUI\EcommercePayPal\Livewire\PayLaterMessage as PayLaterMessageComponent;
 use ArtisanPackUI\EcommercePayPal\Livewire\Payment\PayPalApplePay;
 use ArtisanPackUI\EcommercePayPal\Livewire\Payment\PayPalButtons;
@@ -52,8 +56,10 @@ use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\Facades\Blade;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
 use Livewire\Livewire;
+use Throwable;
 
 /**
  * Bootstraps the PayPal gateway satellite.
@@ -146,6 +152,34 @@ class EcommercePayPalServiceProvider extends ServiceProvider
     ];
 
     /**
+     * Fired for every verified PayPal webhook delivery the engine hasn't
+     * seen before: `(string $eventType, array $event, WebhookResult $result)`.
+     *
+     * @since 1.0.0
+     *
+     * @var string
+     */
+    public const WEBHOOK_EVENT_HOOK = 'ap.ecommerce.paypal.webhookEvent';
+
+    /**
+     * The account menu key of the saved payment methods page.
+     *
+     * @since 1.0.0
+     *
+     * @var string
+     */
+    public const ACCOUNT_MENU_KEY = 'paypal-payment-methods';
+
+    /**
+     * The storefront route name of the saved payment methods page.
+     *
+     * @since 1.0.0
+     *
+     * @var string
+     */
+    public const ACCOUNT_ROUTE = 'artisanpack.ecommerce.account.paypal-payment-methods';
+
+    /**
      * Registers the package configuration.
      *
      * @since 1.0.0
@@ -192,7 +226,10 @@ class EcommercePayPalServiceProvider extends ServiceProvider
         $this->registerMigrations();
         $this->registerCommands();
         $this->registerRoutes();
+        $this->registerApiRoutes();
         $this->registerVaultHooks();
+        $this->registerAccountMenu();
+        $this->registerAdminPanels();
 
         // Settings first: defining them applies the admin's stored values
         // to config, which decides whether the gateways register.
@@ -391,6 +428,83 @@ class EcommercePayPalServiceProvider extends ServiceProvider
     }
 
     /**
+     * Registers the saved payment methods REST routes (spec §10.3) on the
+     * engine's REST stack, when the engine's REST API is on: same prefix,
+     * `ecommerce.api.` names, and middleware as the engine's own routes, so
+     * its problem+json errors apply too.
+     *
+     * @since 1.0.0
+     *
+     * @return void
+     */
+    protected function registerApiRoutes(): void
+    {
+        if ( $this->app->routesAreCached() || ! (bool) config( 'artisanpack.ecommerce.features.rest', true ) ) {
+            return;
+        }
+
+        Route::prefix( trim( (string) config( 'artisanpack.ecommerce.api_prefix', 'api/ecommerce' ), '/' ) . '/' . config( 'artisanpack.ecommerce.api.version', 'v1' ) )
+            ->middleware( array_values( array_unique( array_merge(
+                [ 'ecommerce.json' ],
+                (array) config( 'artisanpack.ecommerce.api.middleware', [ 'api', 'ecommerce.request-id' ] ),
+                [ 'ecommerce.locale' ],
+            ) ) ) )
+            ->name( 'ecommerce.api.' )
+            ->group( dirname( __DIR__ ) . '/routes/api.php' );
+    }
+
+    /**
+     * Adds "Saved payment methods" to the engine's account menu (spec
+     * §10.3), shown while vaulting is on. It points at the Livewire account
+     * page; React and Vue storefronts read the entry from
+     * `me/account-menu` and route it themselves.
+     *
+     * @since 1.0.0
+     *
+     * @return void
+     */
+    protected function registerAccountMenu(): void
+    {
+        $menu = $this->app->make( AccountMenuRegistry::class );
+
+        if ( $menu->has( self::ACCOUNT_MENU_KEY ) ) {
+            return;
+        }
+
+        $menu->register( self::ACCOUNT_MENU_KEY, [
+            'label'     => static fn (): string => __( 'Saved payment methods' ),
+            'route'     => self::ACCOUNT_ROUTE,
+            'icon'      => 'o-credit-card',
+            'position'  => 35,
+            'visible'   => static fn (): bool => (bool) config( self::CONFIG_KEY . '.vault.enabled', false ),
+            'satellite' => self::PACKAGE_NAME,
+        ] );
+    }
+
+    /**
+     * Adds the PayPal side panel to admin-livewire's order screen (spec
+     * §11), only when admin-livewire is installed.
+     *
+     * @since 1.0.0
+     *
+     * @return void
+     */
+    protected function registerAdminPanels(): void
+    {
+        if ( ! class_exists( Livewire::class ) || ! class_exists( OrderPanelRegistry::class ) ) {
+            return;
+        }
+
+        Livewire::component( PayPalOrderPanel::COMPONENT, PayPalOrderPanel::class );
+
+        $this->callAfterResolving( OrderPanelRegistry::class, static function ( OrderPanelRegistry $panels ): void {
+            if ( ! $panels->has( PayPalOrderPanel::PANEL_KEY ) ) {
+                $panels->register( PayPalOrderPanel::PANEL_KEY, PayPalOrderPanel::COMPONENT, PayPalOrderPanel::COLUMN, PayPalOrderPanel::POSITION );
+            }
+        } );
+    }
+
+    /**
      * Registers the setup commands and schedules the daily
      * reauthorization run.
      *
@@ -438,9 +552,9 @@ class EcommercePayPalServiceProvider extends ServiceProvider
 
     /**
      * Registers the Livewire components: the live Pay Later message when
-     * Livewire is installed (spec §9.7), and the payment drivers with
-     * storefront-livewire's `PaymentDriverRegistry` when that package is
-     * installed (spec §9.2).
+     * Livewire is installed (spec §9.7), and, when storefront-livewire is
+     * installed, the payment drivers with its `PaymentDriverRegistry`
+     * (spec §9.2) and the saved payment methods account page (spec §10.3).
      *
      * A driver the registry already holds is left alone, so a host's
      * `payments.drivers` config wins whichever provider boots first (the
@@ -461,6 +575,13 @@ class EcommercePayPalServiceProvider extends ServiceProvider
 
         if ( ! class_exists( PaymentDriverRegistry::class ) ) {
             return;
+        }
+
+        // Spec §10.3: the account page, inside the storefront's account.
+        Livewire::component( SavedPaymentMethods::COMPONENT, SavedPaymentMethods::class );
+
+        if ( ! $this->app->routesAreCached() && (bool) config( 'artisanpack.ecommerce-storefront-livewire.storefront.routes_enabled', true ) ) {
+            $this->loadRoutesFrom( dirname( __DIR__ ) . '/routes/account.php' );
         }
 
         $registry = $this->app->make( PaymentDriverRegistry::class );
@@ -499,11 +620,24 @@ class EcommercePayPalServiceProvider extends ServiceProvider
             $registry->register( $gateway::KEY, $gateway );
         }
 
-        // Notes, refunds, and disputes from PayPal's events. The engine fires
-        // this action only for verified deliveries it hasn't seen before.
+        // Notes, refunds, disputes, and vault changes from PayPal's events.
+        // The engine fires this action only for verified deliveries it
+        // hasn't seen before.
         addAction( 'ap.ecommerce.gateway.' . PayPalWalletGateway::KEY . '.webhook_received', static function ( mixed $result ): void {
-            if ( $result instanceof WebhookResult && $result->verified && PayPalWebhookProcessor::handles( $result->eventType ) ) {
+            if ( ! $result instanceof WebhookResult || ! $result->verified ) {
+                return;
+            }
+
+            if ( PayPalWebhookProcessor::handles( $result->eventType ) ) {
                 ProcessPayPalWebhook::dispatch( PayPalWebhookProcessor::minimal( $result->payload ) );
+            }
+
+            // A host listener that throws must not fail the delivery: the
+            // engine would release it and PayPal redeliver it.
+            try {
+                doAction( self::WEBHOOK_EVENT_HOOK, (string) $result->eventType, $result->payload, $result );
+            } catch ( Throwable $exception ) {
+                report( $exception );
             }
         } );
 
