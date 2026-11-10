@@ -47,7 +47,8 @@
     "orchestra/testbench": "^10.2|^11.0",
     "friendsofphp/php-cs-fixer": "^3.75",
     "artisanpack-ui/ecommerce-storefront-livewire": "^1.0",
-    "artisanpack-ui/ecommerce-admin-livewire": "^1.0"
+    "artisanpack-ui/ecommerce-admin-livewire": "^1.0",
+    "rebing/graphql-laravel": "^9.0|^10.0"
   },
   "suggest": {
     "artisanpack-ui/ecommerce-storefront-livewire": "Livewire payment drivers, Pay Later messaging, and the account saved-methods page.",

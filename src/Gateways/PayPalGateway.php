@@ -15,12 +15,14 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\EcommercePayPal\Gateways;
 
+use ArtisanPackUI\Ecommerce\Contracts\AcceptsPaymentOptions;
 use ArtisanPackUI\Ecommerce\Contracts\PaymentGateway;
 use ArtisanPackUI\Ecommerce\Contracts\RendersClientPayment;
 use ArtisanPackUI\Ecommerce\Exceptions\PaymentCurrencyMismatchException;
 use ArtisanPackUI\Ecommerce\Models\Cart;
 use ArtisanPackUI\Ecommerce\Models\Order;
 use ArtisanPackUI\Ecommerce\Models\Refund;
+use ArtisanPackUI\Ecommerce\Services\CheckoutService;
 use ArtisanPackUI\Ecommerce\ValueObjects\PaymentResult;
 use ArtisanPackUI\Ecommerce\ValueObjects\PaymentSession;
 use ArtisanPackUI\Ecommerce\ValueObjects\RefundResult;
@@ -60,13 +62,38 @@ use UnexpectedValueException;
  * gateway ({@see PayPalWalletGateway}) serves webhooks; a webhook posted to
  * a sibling's URL is refused with `use_paypal_endpoint`.
  *
+ * Saving a payment method and paying with a saved card come in as payment
+ * options ({@see AcceptsPaymentOptions}), from API storefronts and the
+ * Livewire drivers alike.
+ *
  * @package    ArtisanPack_UI
  * @subpackage EcommercePayPal
  *
  * @since      1.0.0
  */
-abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
+abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, RendersClientPayment
 {
+    /**
+     * Payment option: save the PayPal account or card for faster checkout
+     * (spec §10.2). Boolean; `paypal` and `paypal-card` while vaulting is on
+     * and the shopper is signed in.
+     *
+     * @since 1.0.0
+     *
+     * @var string
+     */
+    public const SAVE_OPTION = 'save_payment_method';
+
+    /**
+     * Payment option: pay with this saved card, the local token id from
+     * `GET me/paypal/payment-methods` (spec §10.2). `paypal-card` only.
+     *
+     * @since 1.0.0
+     *
+     * @var string
+     */
+    public const SAVED_METHOD_OPTION = 'saved_payment_method';
+
     /**
      * Payment sources whose 3-D Secure result the liability-shift policy
      * checks (spec §9.4).
@@ -248,6 +275,60 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
     }
 
     /**
+     * The payment options this gateway accepts for `$cart` (#42):
+     * {@see self::SAVE_OPTION} on gateways that vault, and
+     * {@see self::SAVED_METHOD_OPTION} on the card gateway, both only while
+     * vaulting is on and the cart belongs to the signed-in shopper. None
+     * otherwise, so the engine refuses any option (guests included).
+     *
+     * @since 1.0.0
+     *
+     * @param  Cart  $cart  Cart.
+     *
+     * @return array<string, array<int, string>>
+     */
+    public function paymentOptionRules( Cart $cart ): array
+    {
+        if ( ! $this->supportsSavedInstruments() || null === app( PayPalVault::class )->shopperFor( $cart ) ) {
+            return [];
+        }
+
+        $rules = [ self::SAVE_OPTION => [ 'sometimes', 'boolean' ] ];
+
+        if ( 'card' === $this->paymentSource() ) {
+            $rules[ self::SAVED_METHOD_OPTION ] = [ 'sometimes', 'integer', 'min:1' ];
+        }
+
+        return $rules;
+    }
+
+    /**
+     * Whether `$session`'s Order was built for other options: a different
+     * "save" choice than `cart.meta.paypal` records, or a different saved
+     * card than the one recorded for that Order.
+     *
+     * @since 1.0.0
+     *
+     * @param  Cart                  $cart     Cart.
+     * @param  PaymentSession        $session  The cart's current session.
+     * @param  array<string, mixed>  $options  Validated options.
+     *
+     * @return bool
+     */
+    public function paymentOptionsChanged( Cart $cart, PaymentSession $session, array $options ): bool
+    {
+        [ $save, $savedCard ] = self::requestedOptions( $options );
+
+        $meta    = (array) ( $cart->getAttribute( 'meta' ) ?? [] );
+        $saved   = $meta['paypal'][ PayPalVault::SAVED_TOKEN_META ] ?? null;
+        $current = is_array( $saved ) && ( $saved['order_id'] ?? null ) === $session->reference && is_numeric( $saved['id'] ?? null )
+            ? (int) $saved['id']
+            : null;
+
+        return $save !== app( PayPalVault::class )->wantsToSave( $cart ) || $savedCard !== $current;
+    }
+
+    /**
      * Normalizes a PayPal Order's state to a `PaymentSession::STATUS_*`
      * value (spec §7.2), or null for a state the engine shouldn't act on.
      *
@@ -284,6 +365,11 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
      * @param  Cart                  $cart     Cart.
      * @param  array<string, mixed>  $context  `idempotency_key`, plus the payload builder's context.
      *
+     * Payment options (`$context['payment_options']`, validated by the
+     * engine against {@see self::paymentOptionRules()}) are applied first:
+     * the "save" choice is recorded on the cart, and a saved card becomes
+     * {@see PayPalVault::SAVED_TOKEN_CONTEXT}.
+     *
      * With a saved card in the context ({@see PayPalVault::SAVED_TOKEN_CONTEXT}),
      * the Order pays with its `vault_id` (spec §10.2). A token PayPal
      * reports invalid is soft-deleted and the shopper told to pick again.
@@ -297,6 +383,7 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
     public function createPaymentSession( Cart $cart, array $context = [] ): PaymentSession
     {
         $vault     = app( PayPalVault::class );
+        $context   = $this->withPaymentOptions( $cart, $vault, $context );
         $payload   = $this->payloads->build( $cart, $this, $context );
         $savedCard = $this->savedCardIn( $cart, $payload, $context );
         $keyed     = isset( $context['idempotency_key'] ) && '' !== trim( (string) $context['idempotency_key'] );
@@ -307,6 +394,7 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
         } catch ( PayPalApiException $exception ) {
             if ( null !== $savedCard && PayPalVault::rejectsToken( $exception ) ) {
                 $vault->forget( $savedCard );
+                $this->forgetAfterRequest( $savedCard );
 
                 throw PayPalSavedMethodException::invalid( $savedCard, $exception );
             }
@@ -792,6 +880,25 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
     }
 
     /**
+     * The "save" choice and saved card id that `$options` ask for.
+     *
+     * @since 1.0.0
+     *
+     * @param  array<string, mixed>  $options  Validated options.
+     *
+     * @return array{0: bool, 1: int|null}
+     */
+    protected static function requestedOptions( array $options ): array
+    {
+        $saved = $options[ self::SAVED_METHOD_OPTION ] ?? null;
+
+        return [
+            true === filter_var( $options[ self::SAVE_OPTION ] ?? false, FILTER_VALIDATE_BOOLEAN ),
+            is_numeric( $saved ) ? (int) $saved : null,
+        ];
+    }
+
+    /**
      * Whether the buyer's funding source was declined when PayPal Order
      * `$paypalOrderId` was captured, so the driver reopens PayPal on the same
      * Order for them to pick another (spec §7.3, §9.3).
@@ -1008,6 +1115,70 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
             metadata: $metadata,
             status: $this->sessionStatus( $order ),
         );
+    }
+
+    /**
+     * `$context` with its payment options applied (#42): the "save" choice
+     * is recorded on `cart.meta.paypal` (a missing choice means "don't
+     * save"), and a saved card becomes {@see PayPalVault::SAVED_TOKEN_CONTEXT},
+     * which the payload builder checks belongs to the signed-in shopper.
+     * Context without options is returned unchanged.
+     *
+     * The engine creates the session inside a database transaction, so a
+     * failure rolls the recorded choice back with it.
+     *
+     * @since 1.0.0
+     *
+     * @param  Cart                  $cart     Cart.
+     * @param  PayPalVault           $vault    Vault.
+     * @param  array<string, mixed>  $context  Session context.
+     *
+     * @return array<string, mixed>
+     */
+    protected function withPaymentOptions( Cart $cart, PayPalVault $vault, array $context ): array
+    {
+        $options = $context[ CheckoutService::PAYMENT_OPTIONS ] ?? null;
+
+        if ( ! is_array( $options ) ) {
+            return $context;
+        }
+
+        [ $save, $savedCard ] = self::requestedOptions( $options );
+
+        if ( $vault->wantsToSave( $cart ) !== $save ) {
+            $vault->rememberChoice( $cart, $save );
+        }
+
+        if ( null !== $savedCard ) {
+            $context[ PayPalVault::SAVED_TOKEN_CONTEXT ] = $savedCard;
+        }
+
+        return $context;
+    }
+
+    /**
+     * Soft-deletes `$token` again once the request ends. The engine creates
+     * sessions inside a database transaction, which rolls back the delete
+     * made when PayPal rejected the token, so without this the shopper
+     * would be offered the dead card again.
+     *
+     * @since 1.0.0
+     *
+     * @param  PayPalPaymentToken  $token  The token PayPal rejected.
+     *
+     * @return void
+     */
+    protected function forgetAfterRequest( PayPalPaymentToken $token ): void
+    {
+        $id = $token->getKey();
+
+        app()->terminating( static function () use ( $id ): void {
+            $current = PayPalPaymentToken::query()->whereKey( $id )->first();
+
+            if ( null !== $current ) {
+                app( PayPalVault::class )->forget( $current );
+            }
+        } );
     }
 
     /**
@@ -1693,7 +1864,7 @@ abstract class PayPalGateway implements PaymentGateway, RendersClientPayment
      */
     protected static function filled( array $values ): array
     {
-        return array_filter( $values, static function ( mixed $value ): bool {
+        return array_filter( $values, static function ( mixed $value): bool {
             return null !== $value && '' !== $value && [] !== $value;
         } );
     }

@@ -38,6 +38,29 @@ After capture, the returned vault token id and PayPal customer id are stored. Wh
 
 `supportsSavedInstruments()` returns `vault.enabled` for the `paypal` and `paypal-card` gateways, and `false` for the wallets.
 
+## From API storefronts
+
+React, Vue, and headless storefronts send the same choices as `payment_options` when they create the payment session (`POST checkout/{cart}/session`, or GraphQL `createPaymentSession`). The gateways implement the engine's `AcceptsPaymentOptions` contract (engine 1.3), and the Livewire drivers use the same options.
+
+| Option | Type | Gateways | Does |
+| --- | --- | --- | --- |
+| `save_payment_method` | boolean | `paypal`, `paypal-card` | Asks PayPal to vault the account or card when the Order is captured. Leaving it out of the options means "don't save". |
+| `saved_payment_method` | integer | `paypal-card` | Pays with this saved card: the `id` from `GET me/paypal/payment-methods`. No card fields are needed. |
+
+```http
+POST /api/ecommerce/v1/checkout/{cart}/session
+Authorization: Bearer {token}
+Idempotency-Key: 0b6e…
+
+{ "return_url": "https://shop.test/checkout/return", "payment_options": { "save_payment_method": true } }
+```
+
+- **Who can send them.** Options apply only while vaulting is on and the cart belongs to the signed-in shopper. A guest, a signed-out shopper, the Apple Pay and Google Pay gateways, an unknown key, or a saved card on the `paypal` gateway all get `422` `payment-options-invalid`, and no PayPal Order is created.
+- **Saved cards.** A card that isn't the shopper's (or is from the other mode, or is a PayPal account) is `422` `saved-payment-method-unavailable`. A card PayPal no longer accepts is removed and answered with `422` `saved-payment-method-invalid`. In both cases, ask the shopper to choose another card or enter a new one.
+- **Changing the choice.** Send the options again whenever the shopper changes them. The cart's PayPal Order is kept while the options match what it was created with, and replaced when they don't (ticking or unticking "save", or picking another saved card). Leave `payment_options` out, or send `null`, to keep the current Order's choices. Send `{}` to go back to a new card without saving.
+
+A saved-card Order is often charged when it is created, so after the session call go straight to `POST checkout/{cart}/finalize` with the session's `reference`. Only show PayPal's 3-D Secure step when the session says it needs the shopper (`requires_action`). See [JavaScript Module](Extending-Javascript-Module#saved-methods-in-react-and-vue) for a React example.
+
 ## The account page
 
 With storefront-livewire installed and its routes on, the package adds a **Saved payment methods** page to the customer account:

@@ -32,7 +32,7 @@ licensed under MIT.
 - **Pay Later messaging:** the `<x-ecommerce-paypal::pay-later-message>` Blade component and the live `artisanpack-ecommerce-paypal-pay-later-message` Livewire component that follows the cart total.
 - **Saved payment methods:**
   - `ecommerce_paypal_customers` and `ecommerce_paypal_payment_tokens` tables holding references and display data only;
-  - saving PayPal and cards during checkout, returning-buyer `id_token`s, and paying with a saved card;
+  - saving PayPal and cards during checkout, returning-buyer `id_token`s, and paying with a saved card, from the Livewire drivers and from API storefronts through the engine's `payment_options` (`save_payment_method`, `saved_payment_method`; the gateways implement `AcceptsPaymentOptions`), with saved-card refusals answered as `422` `saved-payment-method-unavailable` / `saved-payment-method-invalid`;
   - a "Saved payment methods" account page and menu entry;
   - REST endpoints under `me/paypal/payment-methods` (list, remove, make default);
   - erasure when the engine deletes a customer.

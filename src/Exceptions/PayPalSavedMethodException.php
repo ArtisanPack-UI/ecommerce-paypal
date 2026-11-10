@@ -15,8 +15,9 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\EcommercePayPal\Exceptions;
 
+use ArtisanPackUI\Ecommerce\Exceptions\CheckoutException;
+use ArtisanPackUI\Ecommerce\Services\CheckoutService;
 use ArtisanPackUI\EcommercePayPal\Models\PayPalPaymentToken;
-use RuntimeException;
 use Throwable;
 
 /**
@@ -24,31 +25,65 @@ use Throwable;
  * shopper's, it was removed, or PayPal reported the vaulted token invalid
  * (in which case it has been soft-deleted locally).
  *
- * The message is translated and safe to show the shopper. When PayPal
- * rejected the token, {@see self::$token} names it: the gateway soft-deletes
- * it straight away, but a caller that ran the payment session inside a
- * database transaction (the engine's checkout does) sees that rolled back
- * with the exception, and should forget the token again afterwards.
+ * The message is translated and safe to show the shopper. It is a
+ * {@see CheckoutException} on the `payment_options` field, so the engine's
+ * REST and GraphQL checkout answer it as a 422 with its code
+ * (`saved-payment-method-unavailable` or `saved-payment-method-invalid`).
+ *
+ * When PayPal rejected the token, {@see self::$token} names it. The gateway
+ * soft-deletes it straight away and again once the request ends, because
+ * the engine's checkout runs the session inside a database transaction that
+ * rolls the first delete back with this exception.
  *
  * @package    ArtisanPack_UI
  * @subpackage EcommercePayPal
  *
  * @since      1.0.0
  */
-class PayPalSavedMethodException extends RuntimeException
+class PayPalSavedMethodException extends CheckoutException
 {
+    /**
+     * The code for a saved method that isn't the shopper's to use.
+     *
+     * @since 1.0.0
+     *
+     * @var string
+     */
+    public const UNAVAILABLE = 'saved-payment-method-unavailable';
+
+    /**
+     * The code for a saved method PayPal no longer accepts.
+     *
+     * @since 1.0.0
+     *
+     * @var string
+     */
+    public const INVALID = 'saved-payment-method-invalid';
+
+    /**
+     * PayPal's error, when PayPal rejected the token.
+     *
+     * @since 1.0.0
+     *
+     * @var Throwable|null
+     */
+    public readonly ?Throwable $paypalError;
+
     /**
      * Creates the exception.
      *
      * @since 1.0.0
      *
-     * @param  string                   $message   Shopper-facing message.
-     * @param  PayPalPaymentToken|null  $token     The token PayPal rejected, if it did.
-     * @param  Throwable|null           $previous  PayPal's error.
+     * @param  string                   $message    Shopper-facing message.
+     * @param  PayPalPaymentToken|null  $token      The token PayPal rejected, if it did.
+     * @param  Throwable|null           $previous   PayPal's error.
+     * @param  string                   $errorCode  {@see self::UNAVAILABLE} or {@see self::INVALID}.
      */
-    public function __construct( string $message, public readonly ?PayPalPaymentToken $token = null, ?Throwable $previous = null )
+    public function __construct( string $message, public readonly ?PayPalPaymentToken $token = null, ?Throwable $previous = null, string $errorCode = self::UNAVAILABLE )
     {
-        parent::__construct( $message, 0, $previous );
+        parent::__construct( CheckoutService::PAYMENT_OPTIONS, $errorCode, $message );
+
+        $this->paypalError = $previous;
     }
 
     /**
@@ -75,6 +110,6 @@ class PayPalSavedMethodException extends RuntimeException
      */
     public static function invalid( PayPalPaymentToken $token, ?PayPalApiException $previous = null ): self
     {
-        return new self( __( 'That saved card can no longer be used, so we removed it. Choose another card or enter a new one.' ), $token, $previous );
+        return new self( __( 'That saved card can no longer be used, so we removed it. Choose another card or enter a new one.' ), $token, $previous, self::INVALID );
     }
 }

@@ -15,6 +15,7 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\EcommercePayPal\Livewire\Payment;
 
+use ArtisanPackUI\Ecommerce\Services\CheckoutService;
 use ArtisanPackUI\Ecommerce\ValueObjects\PaymentSession;
 use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalSavedMethodException;
 use ArtisanPackUI\EcommercePayPal\Gateways\PayPalGateway;
@@ -187,8 +188,13 @@ class PayPalCardFields extends PayPalPaymentDriver
         }
 
         try {
+            // The same payment option API storefronts send; the shopper's
+            // "save" choice is kept for when they switch back to a new card.
             $session = $this->rateLimited( 'ecommerce.cart.mutate', fn (): ?PaymentSession => $this->replaceSession( $cart, $gateway, [
-                PayPalVault::SAVED_TOKEN_CONTEXT => (int) $card->getKey(),
+                CheckoutService::PAYMENT_OPTIONS => [
+                    PayPalGateway::SAVED_METHOD_OPTION => (int) $card->getKey(),
+                    PayPalGateway::SAVE_OPTION         => app( PayPalVault::class )->wantsToSave( $cart ),
+                ],
             ] ) );
         } catch ( PayPalSavedMethodException $exception ) {
             app( PayPalVault::class )->forgetRejected( $exception );
