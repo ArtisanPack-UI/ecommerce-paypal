@@ -26,6 +26,7 @@ use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Illuminate\Support\Collection;
 
 /**
  * `me/paypal/payment-methods` (spec §10.3): the signed-in shopper lists
@@ -57,7 +58,8 @@ class SavedPaymentMethodController
 
     /**
      * Lists the shopper's saved methods for the current mode: the default
-     * first, then the most recently used.
+     * first, then the most recently used. An account with no customer
+     * record has none, so it gets an empty list.
      *
      * @since 1.0.0
      *
@@ -67,9 +69,13 @@ class SavedPaymentMethodController
      */
     public function index( Request $request ): JsonResponse
     {
-        return $this->forCustomer( $request, fn ( Customer $customer ): JsonResponse => SavedPaymentMethodResource::collection(
-            $this->vault->tokensFor( (int) $customer->getKey() ),
-        )->response( $request ) );
+        return $this->forCustomer(
+            $request,
+            fn ( Customer $customer ): JsonResponse => SavedPaymentMethodResource::collection(
+                $this->vault->tokensFor( (int) $customer->getKey() ),
+            )->response( $request ),
+            static fn (): JsonResponse => SavedPaymentMethodResource::collection( new Collection() )->response( $request ),
+        );
     }
 
     /**
@@ -120,16 +126,18 @@ class SavedPaymentMethodController
     /**
      * Runs `$callback` for the signed-in shopper's customer record, as the
      * engine's `me/*` routes do: a token without the storefront ability is
-     * a `403`, and an account with no customer record a `404`.
+     * a `403`, and an account with no customer record runs `$withoutCustomer`
+     * or, without one, is a `404`.
      *
      * @since 1.0.0
      *
-     * @param  Request                                        $request   Request.
-     * @param  Closure(Customer): (JsonResponse|Response)  $callback  Operation.
+     * @param  Request                                           $request          Request.
+     * @param  Closure(Customer): (JsonResponse|Response)        $callback         Operation.
+     * @param  (Closure(): (JsonResponse|Response))|null         $withoutCustomer  Answer for an account with no customer record.
      *
      * @return JsonResponse|Response
      */
-    protected function forCustomer( Request $request, Closure $callback ): JsonResponse|Response
+    protected function forCustomer( Request $request, Closure $callback, ?Closure $withoutCustomer = null ): JsonResponse|Response
     {
         $user = $request->user();
 
@@ -138,6 +146,10 @@ class SavedPaymentMethodController
         }
 
         $customer = null === $user ? null : Customer::forUser( $user );
+
+        if ( null === $customer && null !== $withoutCustomer ) {
+            return $withoutCustomer();
+        }
 
         if ( null === $customer ) {
             return Problem::make( 404, 'customer-not-found', __( 'Not found' ), __( 'No customer record is linked to this account.' ), $request );

@@ -270,6 +270,32 @@ describe( 'capture', function (): void {
         Exceptions::assertReported( Illuminate\Database\UniqueConstraintViolationException::class );
     } );
 
+    it( 'doesn\'t bring back a method the shopper removed when a pending capture is recorded again', function (): void {
+        $customer = Customer::factory()->create();
+        $order    = Orders::create( [ 'customer_id' => $customer->id ] );
+        $captured = Orders::body( 'orders/captured', [
+            'purchase_units.0.payments.captures.0.status'         => 'PENDING',
+            'purchase_units.0.payments.captures.0.status_details' => [ 'reason' => 'ECHECK' ],
+            'payment_source.paypal.attributes.vault'              => [ 'id' => 'tok-paypal', 'status' => 'VAULTED', 'customer' => [ 'id' => 'PAYPAL-CUS' ] ],
+        ] );
+
+        $this->paypal->respond( 'orders.capture', $captured );
+
+        expect( vaultGateway( 'paypal' )->capturePayment( $order, Orders::session() )->success )->toBeTrue();
+
+        app( PayPalVault::class )->forget( PayPalPaymentToken::query()->sole() );
+
+        // The capture is checked again (a refetch or a retry).
+        $this->paypal->respond( 'orders.get', $captured );
+
+        expect( vaultGateway( 'paypal' )->capturePayment( $order->fresh(), Orders::session() )->success )->toBeTrue()
+            ->and( PayPalPaymentToken::query()->count() )->toBe( 0 )
+            ->and( PayPalPaymentToken::withTrashed()->sole()->trashed() )->toBeTrue()
+            ->and( app( PayPalVault::class )->defaultFor( $customer->id ) )->toBeNull();
+
+        $this->paypal->assertSentCount( 'orders.capture', 1 );
+    } );
+
     it( 'stores nothing for a guest order or when PayPal is still vaulting', function ( array $vault, bool $guest ): void {
         $this->paypal->respond( 'orders.capture', Orders::body( 'orders/captured', [ 'payment_source.paypal.attributes.vault' => $vault ] ) );
 

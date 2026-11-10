@@ -92,10 +92,38 @@ it( 'requires authentication', function (): void {
     $this->getJson( '/api/ecommerce/v1/me/paypal/payment-methods' )->assertUnauthorized();
 } );
 
-it( 'answers 404 for an account with no customer record', function (): void {
+it( 'lists no methods for an account with no customer record', function (): void {
     $this->actingAs( new GenericUser( [ 'id' => 99 ] ), 'sanctum' );
 
-    $this->getJson( '/api/ecommerce/v1/me/paypal/payment-methods' )->assertNotFound();
+    $this->getJson( '/api/ecommerce/v1/me/paypal/payment-methods' )
+        ->assertOk()
+        ->assertJsonCount( 0, 'data' );
+} );
+
+it( 'answers 404 for changes from an account with no customer record', function ( string $method, string $suffix ): void {
+    $this->actingAs( new GenericUser( [ 'id' => 99 ] ), 'sanctum' );
+
+    $card = PayPalPaymentToken::factory()->create();
+
+    $this->json( $method, '/api/ecommerce/v1/me/paypal/payment-methods/' . $card->id . $suffix, [], apiWrite() )->assertNotFound();
+
+    expect( $card->refresh()->trashed() )->toBeFalse();
+} )->with( [
+    'delete'  => [ 'DELETE', '' ],
+    'default' => [ 'POST', '/default' ],
+] );
+
+it( 'answers 404 when the method was removed after it was loaded', function (): void {
+    apiShopper();
+
+    $default = PayPalPaymentToken::factory()->default()->create( [ 'customer_id' => $this->customer->id ] );
+    $card    = PayPalPaymentToken::factory()->create( [ 'customer_id' => $this->customer->id ] );
+
+    app( ArtisanPackUI\EcommercePayPal\Vault\PayPalVault::class )->forget( $card );
+
+    $this->postJson( '/api/ecommerce/v1/me/paypal/payment-methods/' . $card->id . '/default', [], apiWrite() )->assertNotFound();
+
+    expect( $default->refresh()->is_default )->toBeTrue();
 } );
 
 it( 'deletes a method at PayPal, then here', function (): void {

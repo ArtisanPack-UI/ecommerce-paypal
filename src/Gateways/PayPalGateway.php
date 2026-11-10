@@ -419,6 +419,11 @@ abstract class PayPalGateway implements AcceptsPaymentOptions, PaymentGateway, R
             $order = $this->client->orders()->create( $payload, $requestId );
         } catch ( PayPalApiException $exception ) {
             if ( null !== $savedCard && PayPalVault::rejectsToken( $exception ) ) {
+                // A card PayPal still holds was only declined: keep it.
+                if ( ! $vault->tokenIsGone( $savedCard, $exception ) ) {
+                    throw PayPalSavedMethodException::declined( $exception );
+                }
+
                 $vault->forget( $savedCard );
                 $this->forgetAfterRequest( $savedCard );
 

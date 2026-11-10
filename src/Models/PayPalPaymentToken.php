@@ -19,6 +19,7 @@ use ArtisanPackUI\Ecommerce\Models\Customer;
 use ArtisanPackUI\EcommercePayPal\Database\Factories\PayPalPaymentTokenFactory;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\MassPrunable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
@@ -31,6 +32,9 @@ use Illuminate\Support\Carbon;
  * (`display`: `brand`, `last_digits`, `expiry`, `email`), never card data.
  * Defaults are kept to one per customer per mode by
  * {@see \ArtisanPackUI\EcommercePayPal\Vault\PayPalVault::makeDefault()}.
+ *
+ * Removed (soft-deleted) tokens are pruned, display data and all, once
+ * `vault.prune_after_days` have passed, by `ecommerce-paypal:prune-vault`.
  *
  * @package    ArtisanPack_UI
  * @subpackage EcommercePayPal
@@ -54,6 +58,7 @@ use Illuminate\Support\Carbon;
 class PayPalPaymentToken extends Model
 {
     use HasFactory;
+    use MassPrunable;
     use SoftDeletes;
 
     /**
@@ -178,6 +183,20 @@ class PayPalPaymentToken extends Model
         }
 
         return Carbon::createFromFormat( '!Y-m', $expiry )->endOfMonth()->isPast();
+    }
+
+    /**
+     * The tokens to prune: removed more than `vault.prune_after_days` ago.
+     *
+     * @since 1.0.0
+     *
+     * @return Builder<PayPalPaymentToken>
+     */
+    public function prunable(): Builder
+    {
+        $days = max( 0, (int) config( 'artisanpack.ecommerce-paypal.vault.prune_after_days', 30 ) );
+
+        return static::onlyTrashed()->where( $this->getDeletedAtColumn(), '<', now()->subDays( $days ) );
     }
 
     /**

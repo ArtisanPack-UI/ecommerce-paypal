@@ -288,6 +288,18 @@ describe( 'idempotency and retries', function (): void {
             ->toThrow( fn ( PayPalApiException $exception ) => expect( $exception->status )->toBe( 0 )->and( $exception->isRetryable() )->toBeTrue() );
     } );
 
+    it( 'masks a saved-payment token id in a connection failure', function ( string $path ): void {
+        $exception = PayPalApiException::connectionFailed( new RuntimeException( 'cURL error 28: Operation timed out for https://api-m.sandbox.paypal.com' . $path . ' after 15000 ms' ) );
+
+        expect( $exception->getMessage() )
+            ->not->toContain( 'tok-secret' )
+            ->toContain( '[redacted]' )
+            ->toContain( 'after 15000 ms' );
+    } )->with( [
+        'payment token' => [ '/v3/vault/payment-tokens/tok-secret' ],
+        'setup token'   => [ '/v3/vault/setup-tokens/tok-secret?x=1' ],
+    ] );
+
     it( 'never retries other 4xx', function ( string $error ): void {
         $this->paypal->error( 'orders.capture', $error );
 

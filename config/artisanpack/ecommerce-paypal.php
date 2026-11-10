@@ -191,12 +191,15 @@ return [
     |--------------------------------------------------------------------------
     |
     | Lets signed-in shoppers save PayPal and cards for later. Needs the
-    | `paypal` or `card` method enabled.
+    | `paypal` or `card` method enabled. `prune_after_days` is how long a
+    | removed method's display data is kept before the daily
+    | `ecommerce-paypal:prune-vault` command deletes the row.
     |
     */
 
     'vault' => [
-        'enabled' => false,
+        'enabled'          => false,
+        'prune_after_days' => (int) env( 'PAYPAL_VAULT_PRUNE_AFTER_DAYS', 30 ),
     ],
 
     /*

@@ -26,10 +26,14 @@ use ArtisanPackUI\EcommercePayPal\Exceptions\PayPalSavedMethodException;
 use ArtisanPackUI\EcommercePayPal\Jobs\DeletePayPalVaultTokens;
 use ArtisanPackUI\EcommercePayPal\Models\PayPalCustomer;
 use ArtisanPackUI\EcommercePayPal\Models\PayPalPaymentToken;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
 
@@ -89,8 +93,9 @@ class PayPalVault
     public const SAVED_TOKEN_META = 'saved_token';
 
     /**
-     * PayPal error issues that always mean a vaulted token can no longer be
-     * used.
+     * PayPal error issues that say a vaulted token can no longer be used.
+     * Only those in {@see self::UNCONFIRMED_TOKEN_ISSUES} need PayPal to
+     * confirm the token is gone before it is forgotten.
      *
      * @since 1.0.0
      *
@@ -98,6 +103,18 @@ class PayPalVault
      */
     public const INVALID_TOKEN_ISSUES = [
         'TOKEN_ID_NOT_FOUND',
+        'PAYMENT_SOURCE_CANNOT_BE_USED',
+    ];
+
+    /**
+     * Issues that may also mean the card was only declined this time, so
+     * the token is looked up at PayPal before it is forgotten.
+     *
+     * @since 1.0.0
+     *
+     * @var array<int, string>
+     */
+    public const UNCONFIRMED_TOKEN_ISSUES = [
         'PAYMENT_SOURCE_CANNOT_BE_USED',
     ];
 
@@ -287,8 +304,13 @@ class PayPalVault
      * (`payment_source.*.attributes.vault`), with the PayPal customer id.
      *
      * Nothing is stored for guest orders, for sources PayPal doesn't vault,
-     * or when PayPal returned no token id (it may still be vaulting; the
-     * `VAULT.PAYMENT-TOKEN.CREATED` webhook reports it then).
+     * or when PayPal returned no token id or a status other than `VAULTED`
+     * (it may still be vaulting; the `VAULT.PAYMENT-TOKEN.CREATED` webhook
+     * reports it then).
+     *
+     * The same Order is recorded again on capture refetches and retries, so
+     * this never restores a token the shopper removed (PayPal deleted it)
+     * and leaves a stored token as it is, `last_used_at` included.
      *
      * @since 1.0.0
      *
@@ -307,10 +329,20 @@ class PayPalVault
             return null;
         }
 
+        if ( 'VAULTED' !== ( $vault['status'] ?? 'VAULTED' ) ) {
+            return null;
+        }
+
         $tokenId = isset( $vault['id'] ) && is_string( $vault['id'] ) ? trim( $vault['id'] ) : '';
 
         if ( '' === $tokenId ) {
             return null;
+        }
+
+        $stored = PayPalPaymentToken::withTrashed()->forMode( $this->mode() )->where( 'paypal_token_id', $tokenId )->first();
+
+        if ( null !== $stored ) {
+            return $stored->trashed() ? null : $stored;
         }
 
         $paypalCustomerId = isset( $vault['customer']['id'] ) && is_string( $vault['customer']['id'] ) ? trim( $vault['customer']['id'] ) : null;
@@ -330,6 +362,9 @@ class PayPalVault
      * PayPal customer id. The first method a customer saves in a mode
      * becomes their default.
      *
+     * A token already stored for another customer is left alone (and
+     * logged): one PayPal token never changes hands.
+     *
      * @since 1.0.0
      *
      * @param  int                    $customerId        Engine customer id.
@@ -347,6 +382,24 @@ class PayPalVault
         $mode = $this->mode();
 
         return DB::transaction( function () use ( $customerId, $tokenId, $gatewayKey, $type, $display, $paypalCustomerId, $mode, $used ): PayPalPaymentToken {
+            $token = PayPalPaymentToken::withTrashed()
+                ->forMode( $mode )
+                ->where( 'paypal_token_id', $tokenId )
+                ->lockForUpdate()
+                ->first();
+
+            if ( null !== $token && (int) $token->customer_id !== $customerId ) {
+                Log::channel( self::logChannel() )->warning( 'Ignored a PayPal vault token already stored for another customer.', [
+                    'token'       => $token->getKey(),
+                    'customer_id' => $customerId,
+                    'mode'        => $mode,
+                ] );
+
+                return $token;
+            }
+
+            $token ??= new PayPalPaymentToken( [ 'paypal_token_id' => $tokenId, 'mode' => $mode ] );
+
             if ( null !== $paypalCustomerId ) {
                 PayPalCustomer::query()->updateOrCreate(
                     [ 'customer_id' => $customerId, 'mode' => $mode ],
@@ -354,11 +407,9 @@ class PayPalVault
                 );
             }
 
-            $token = PayPalPaymentToken::withTrashed()
-                ->forMode( $mode )
-                ->where( 'paypal_token_id', $tokenId )
-                ->lockForUpdate()
-                ->first() ?? new PayPalPaymentToken( [ 'paypal_token_id' => $tokenId, 'mode' => $mode ] );
+            // Lock the customer's tokens before reading the default, so two
+            // saves can't each make a different token the default.
+            PayPalPaymentToken::query()->forCustomer( $customerId )->forMode( $mode )->lockForUpdate()->pluck( 'id' );
 
             $token->fill( [
                 'customer_id' => $customerId,
@@ -387,6 +438,8 @@ class PayPalVault
      *
      * @param  PayPalPaymentToken  $token  Token.
      *
+     * @throws ModelNotFoundException When the token was removed after it was loaded.
+     *
      * @return PayPalPaymentToken
      */
     public function makeDefault( PayPalPaymentToken $token ): PayPalPaymentToken
@@ -397,8 +450,13 @@ class PayPalVault
                 ->forMode( $token->mode );
 
             // Lock the customer's tokens first, so two requests can't each
-            // leave a different default.
-            ( clone $siblings )->lockForUpdate()->pluck( 'id' );
+            // leave a different default, then check the token is still one
+            // of them: it may have been removed since it was loaded.
+            $locked = ( clone $siblings )->lockForUpdate()->pluck( 'id' )->map( static fn ( mixed $id ): int => (int) $id );
+
+            if ( ! $locked->contains( (int) $token->getKey() ) ) {
+                throw ( new ModelNotFoundException() )->setModel( PayPalPaymentToken::class, [ $token->getKey() ] );
+            }
 
             ( clone $siblings )->whereKeyNot( $token->getKey() )->where( 'is_default', true )->update( [ 'is_default' => false ] );
             ( clone $siblings )->whereKey( $token->getKey() )->update( [ 'is_default' => true ] );
@@ -460,8 +518,9 @@ class PayPalVault
 
     /**
      * One of the customer's own tokens in the current mode, or null. Every
-     * lookup by id goes through here (or {@see self::savedCardFor()}), so a
-     * customer can never reach another customer's token.
+     * lookup of a token id that came from a shopper goes through here (or
+     * {@see self::savedCardFor()}), so a customer can never reach another
+     * customer's token.
      *
      * @since 1.0.0
      *
@@ -582,27 +641,52 @@ class PayPalVault
      */
     public static function rejectsToken( PayPalApiException $exception ): bool
     {
-        foreach ( $exception->details as $detail ) {
-            $issue = is_array( $detail ) ? ( $detail['issue'] ?? null ) : null;
+        return self::rejectsTokenWith( $exception, self::INVALID_TOKEN_ISSUES );
+    }
 
-            if ( in_array( $issue, self::INVALID_TOKEN_ISSUES, true ) ) {
-                return true;
-            }
-
-            // A missing resource is only the token when PayPal says so: any
-            // other 404 or invalid id must never delete a shopper's card.
-            if ( in_array( $issue, self::MISSING_RESOURCE_ISSUES, true ) && str_contains( (string) ( $detail['field'] ?? '' ), 'vault_id' ) ) {
-                return true;
-            }
+    /**
+     * Whether `$token` is gone at PayPal, given the `$exception` PayPal
+     * answered a payment with ({@see self::rejectsToken()}).
+     *
+     * `TOKEN_ID_NOT_FOUND` (or a missing `vault_id`) settles it. A
+     * `PAYMENT_SOURCE_CANNOT_BE_USED` may only be a decline, so the token is
+     * looked up: PayPal still having it (or not answering) keeps it.
+     *
+     * @since 1.0.0
+     *
+     * @param  PayPalPaymentToken  $token      The saved method the payment used.
+     * @param  PayPalApiException  $exception  PayPal's error.
+     *
+     * @return bool
+     */
+    public function tokenIsGone( PayPalPaymentToken $token, PayPalApiException $exception ): bool
+    {
+        if ( self::rejectsTokenWith( $exception, array_values( array_diff( self::INVALID_TOKEN_ISSUES, self::UNCONFIRMED_TOKEN_ISSUES ) ) ) ) {
+            return true;
         }
 
-        return false;
+        try {
+            $this->client->vault()->getPaymentToken( $token->paypal_token_id );
+
+            return false;
+        } catch ( PayPalApiException $lookup ) {
+            if ( 404 === $lookup->status ) {
+                return true;
+            }
+
+            report( $lookup );
+
+            return false;
+        }
     }
 
     /**
      * Soft-deletes a token locally (PayPal reported it invalid or deleted
      * it, or the shopper removed it). When it was the default, the
      * customer's most recently used remaining method becomes the default.
+     *
+     * The token is read again under a lock, so a stale `$token` can't skip
+     * the promotion or delete a token twice.
      *
      * @since 1.0.0
      *
@@ -613,10 +697,20 @@ class PayPalVault
     public function forget( PayPalPaymentToken $token ): void
     {
         DB::transaction( function () use ( $token ): void {
-            $wasDefault = (bool) $token->is_default;
+            PayPalPaymentToken::query()->forCustomer( $token->customer_id )->forMode( $token->mode )->lockForUpdate()->pluck( 'id' );
 
-            $token->forceFill( [ 'is_default' => false ] )->save();
-            $token->delete();
+            $fresh = PayPalPaymentToken::query()->whereKey( $token->getKey() )->first();
+
+            if ( null === $fresh ) {
+                return;
+            }
+
+            $wasDefault = (bool) $fresh->is_default;
+
+            $fresh->forceFill( [ 'is_default' => false ] )->save();
+            $fresh->delete();
+
+            $token->setRawAttributes( $fresh->getAttributes(), true );
 
             if ( ! $wasDefault ) {
                 return;
@@ -683,7 +777,8 @@ class PayPalVault
      * The local rows, trashed ones included, are removed right away. The
      * current mode's tokens are then deleted at PayPal by a queued job that
      * retries while PayPal is unreachable; the other mode's credentials
-     * aren't available, so its tokens can only be removed locally.
+     * aren't available, so its tokens can only be removed locally. Without
+     * credentials nothing can be deleted at PayPal, and a warning is logged.
      *
      * @since 1.0.0
      *
@@ -698,20 +793,70 @@ class PayPalVault
         }
 
         $mode     = $this->mode();
-        $tokenIds = PayPalPaymentToken::withTrashed()
-            ->forCustomer( $customerId )
-            ->forMode( $mode )
-            ->pluck( 'paypal_token_id' )
-            ->all();
+        $tokenIds = DB::transaction( static function () use ( $customerId, $mode ): array {
+            $tokenIds = PayPalPaymentToken::withTrashed()
+                ->forCustomer( $customerId )
+                ->forMode( $mode )
+                ->lockForUpdate()
+                ->pluck( 'paypal_token_id' )
+                ->all();
 
-        DB::transaction( static function () use ( $customerId ): void {
             PayPalPaymentToken::withTrashed()->forCustomer( $customerId )->forceDelete();
             PayPalCustomer::query()->where( 'customer_id', $customerId )->delete();
+
+            return array_values( $tokenIds );
         } );
 
-        if ( [] !== $tokenIds && PayPalCredentials::configured() ) {
-            DeletePayPalVaultTokens::dispatch( array_values( $tokenIds ), $mode );
+        if ( [] === $tokenIds ) {
+            return;
         }
+
+        if ( ! PayPalCredentials::configured() ) {
+            Log::channel( self::logChannel() )->warning( 'Saved-payment tokens of a deleted customer were not deleted at PayPal: no PayPal credentials are configured. Delete them in the PayPal account.', [
+                'mode'  => $mode,
+                'count' => count( $tokenIds ),
+            ] );
+
+            return;
+        }
+
+        DeletePayPalVaultTokens::dispatch( $tokenIds, $mode );
+    }
+
+    /**
+     * Erases the vault data of customers the engine no longer has: rows
+     * left behind when the `ap.ecommerce.customer.deleted` hook was missed
+     * (the satellite was uninstalled, the host deleted the customer
+     * directly, or the listener failed). There is no foreign key to do it.
+     *
+     * @since 1.0.0
+     *
+     * @return int The number of customers erased.
+     */
+    public function forgetOrphans(): int
+    {
+        if ( ! Schema::hasTable( 'ecommerce_paypal_payment_tokens' ) ) {
+            return 0;
+        }
+
+        $customer = new Customer();
+        $orphans  = static fn ( Builder $query ): Collection => $query
+            ->whereNotExists( static fn ( QueryBuilder $customers ): QueryBuilder => $customers
+                ->selectRaw( '1' )
+                ->from( $customer->getTable() )
+                ->whereColumn( $customer->getQualifiedKeyName(), $query->getModel()->qualifyColumn( 'customer_id' ) ) )
+            ->distinct()
+            ->pluck( 'customer_id' );
+
+        $customerIds = $orphans( PayPalPaymentToken::withTrashed() )
+            ->merge( $orphans( PayPalCustomer::query() ) )
+            ->map( static fn ( mixed $id ): int => (int) $id )
+            ->unique()
+            ->values();
+
+        $customerIds->each( fn ( int $customerId ) => $this->forgetCustomer( $customerId ) );
+
+        return $customerIds->count();
     }
 
     /**
@@ -742,6 +887,7 @@ class PayPalVault
     /**
      * Deletes every stored token of the current mode at PayPal, for an
      * uninstall with `--purge` (the engine drops the tables afterwards).
+     * Removed (trashed) tokens are skipped: PayPal already deleted them.
      *
      * @since 1.0.0
      *
@@ -757,7 +903,7 @@ class PayPalVault
 
         $mode = $this->mode();
 
-        PayPalPaymentToken::withTrashed()->orderBy( 'id' )->each( function ( PayPalPaymentToken $token ) use ( $mode, &$result ): void {
+        PayPalPaymentToken::query()->orderBy( 'id' )->each( function ( PayPalPaymentToken $token ) use ( $mode, &$result ): void {
             if ( $token->mode !== $mode ) {
                 $result['skipped']++;
 
@@ -809,6 +955,35 @@ class PayPalVault
     }
 
     /**
+     * Whether `$exception` names one of `$issues`, or a missing `vault_id`.
+     *
+     * @since 1.0.0
+     *
+     * @param  PayPalApiException  $exception  PayPal error.
+     * @param  array<int, string>  $issues     Issues that reject the token.
+     *
+     * @return bool
+     */
+    protected static function rejectsTokenWith( PayPalApiException $exception, array $issues ): bool
+    {
+        foreach ( $exception->details as $detail ) {
+            $issue = is_array( $detail ) ? ( $detail['issue'] ?? null ) : null;
+
+            if ( in_array( $issue, $issues, true ) ) {
+                return true;
+            }
+
+            // A missing resource is only the token when PayPal says so: any
+            // other 404 or invalid id must never delete a shopper's card.
+            if ( in_array( $issue, self::MISSING_RESOURCE_ISSUES, true ) && str_contains( (string) ( $detail['field'] ?? '' ), 'vault_id' ) ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Whether the customer has a default token in `$mode` other than
      * `$except`.
      *
@@ -826,7 +1001,21 @@ class PayPalVault
             ->forCustomer( $customerId )
             ->forMode( $mode )
             ->where( 'is_default', true )
-            ->when( null !== $except, static fn ( $query) => $query->whereKeyNot( $except ) )
+            ->when( null !== $except, static fn ( $query ) => $query->whereKeyNot( $except ) )
             ->exists();
+    }
+
+    /**
+     * The configured log channel, or null for the default.
+     *
+     * @since 1.0.0
+     *
+     * @return string|null
+     */
+    private static function logChannel(): ?string
+    {
+        $channel = config( 'artisanpack.ecommerce-paypal.logging.channel' );
+
+        return is_string( $channel ) && '' !== $channel ? $channel : null;
     }
 }

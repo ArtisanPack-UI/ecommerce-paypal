@@ -266,5 +266,9 @@
     "PayPal only refunds whole :currency amounts.": "PayPal erstattet nur ganze Beträge in :currency.",
     "Refund requested by the customer.": "Vom Kunden angeforderte Erstattung.",
     "This PayPal payment belongs to another checkout. Start the payment again.": "Diese PayPal-Zahlung gehört zu einem anderen Bestellvorgang. Starten Sie die Zahlung erneut.",
-    "This payment method can't be used here. Choose another way to pay.": "Diese Zahlungsmethode kann hier nicht verwendet werden. Wählen Sie eine andere Zahlungsart."
+    "This payment method can't be used here. Choose another way to pay.": "Diese Zahlungsmethode kann hier nicht verwendet werden. Wählen Sie eine andere Zahlungsart.",
+    "This card was declined. Choose another payment method.": "Diese Karte wurde abgelehnt. Wählen Sie eine andere Zahlungsmethode.",
+    "PayPal couldn't delete :count saved payment tokens, so nothing was purged. Run the uninstall again.": "PayPal konnte :count gespeicherte Zahlungstoken nicht löschen, daher wurde nichts bereinigt. Führen Sie die Deinstallation erneut aus.",
+    "The PayPal vault tables aren't installed; there is nothing to prune.": "Die PayPal-Tresortabellen sind nicht installiert; es gibt nichts zu bereinigen.",
+    "Deleted customers whose saved payment methods were erased: :customers. Removed payment methods pruned: :pruned.": "Gelöschte Kunden, deren gespeicherte Zahlungsmethoden entfernt wurden: :customers. Bereinigte entfernte Zahlungsmethoden: :pruned."
 }

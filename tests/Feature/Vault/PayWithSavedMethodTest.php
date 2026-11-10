@@ -207,6 +207,55 @@ describe( 'payment session', function (): void {
             ->and( $other->refresh()->is_default )->toBeTrue();
     } );
 
+    it( 'keeps a card PayPal declined but still holds, and asks for another way to pay', function (): void {
+        $customer = Shoppers::signIn();
+        $cart     = Shoppers::cart( $customer, 'paypal-card' );
+        $card     = savedCard( $customer, [ 'is_default' => true, 'paypal_token_id' => 'tok-held' ] );
+
+        $this->paypal->respond( 'orders.create', Orders::issue( 'PAYMENT_SOURCE_CANNOT_BE_USED' ), 422 );
+
+        expect( fn () => savedCardGateway()->createPaymentSession( $cart->load( 'items' ), [ PayPalVault::SAVED_TOKEN_CONTEXT => $card->id ] ) )
+            ->toThrow( function ( PayPalSavedMethodException $exception ): void {
+                expect( $exception->getMessage() )->toBe( 'This card was declined. Choose another payment method.' )
+                    ->and( $exception->errorCode )->toBe( PayPalSavedMethodException::UNAVAILABLE )
+                    ->and( $exception->token )->toBeNull();
+            } );
+
+        $this->paypal->assertSent( 'vault.payment_tokens.get', fn ( Request $request ): bool => str_ends_with( $request->url(), '/tok-held' ) );
+
+        expect( $card->refresh()->trashed() )->toBeFalse()
+            ->and( $card->is_default )->toBeTrue();
+    } );
+
+    it( 'removes a card PayPal can\'t use once PayPal confirms it no longer has it', function (): void {
+        $customer = Shoppers::signIn();
+        $cart     = Shoppers::cart( $customer, 'paypal-card' );
+        $card     = savedCard( $customer );
+
+        $this->paypal->respond( 'orders.create', Orders::issue( 'PAYMENT_SOURCE_CANNOT_BE_USED' ), 422 );
+        $this->paypal->error( 'vault.payment_tokens.get', 'resource-not-found' );
+
+        expect( fn () => savedCardGateway()->createPaymentSession( $cart->load( 'items' ), [ PayPalVault::SAVED_TOKEN_CONTEXT => $card->id ] ) )
+            ->toThrow( PayPalSavedMethodException::class, 'That saved card can no longer be used, so we removed it. Choose another card or enter a new one.' );
+
+        expect( $card->refresh()->trashed() )->toBeTrue();
+    } );
+
+    it( 'removes a card PayPal can\'t find without looking it up', function (): void {
+        $customer = Shoppers::signIn();
+        $cart     = Shoppers::cart( $customer, 'paypal-card' );
+        $card     = savedCard( $customer );
+
+        $this->paypal->respond( 'orders.create', Orders::issue( 'TOKEN_ID_NOT_FOUND' ), 422 );
+
+        expect( fn () => savedCardGateway()->createPaymentSession( $cart->load( 'items' ), [ PayPalVault::SAVED_TOKEN_CONTEXT => $card->id ] ) )
+            ->toThrow( PayPalSavedMethodException::class );
+
+        $this->paypal->assertNotSent( 'vault.payment_tokens.get' );
+
+        expect( $card->refresh()->trashed() )->toBeTrue();
+    } );
+
     it( 'keeps the card when PayPal\'s not-found error isn\'t about the vault id', function ( array $body, int $status ): void {
         $customer = Shoppers::signIn();
         $cart     = Shoppers::cart( $customer, 'paypal-card' );

@@ -266,5 +266,9 @@
     "PayPal only refunds whole :currency amounts.": "PayPal only refunds whole :currency amounts.",
     "Refund requested by the customer.": "Refund requested by the customer.",
     "This PayPal payment belongs to another checkout. Start the payment again.": "This PayPal payment belongs to another checkout. Start the payment again.",
-    "This payment method can't be used here. Choose another way to pay.": "This payment method can't be used here. Choose another way to pay."
+    "This payment method can't be used here. Choose another way to pay.": "This payment method can't be used here. Choose another way to pay.",
+    "This card was declined. Choose another payment method.": "This card was declined. Choose another payment method.",
+    "PayPal couldn't delete :count saved payment tokens, so nothing was purged. Run the uninstall again.": "PayPal couldn't delete :count saved payment tokens, so nothing was purged. Run the uninstall again.",
+    "The PayPal vault tables aren't installed; there is nothing to prune.": "The PayPal vault tables aren't installed; there is nothing to prune.",
+    "Deleted customers whose saved payment methods were erased: :customers. Removed payment methods pruned: :pruned.": "Deleted customers whose saved payment methods were erased: :customers. Removed payment methods pruned: :pruned."
 }
